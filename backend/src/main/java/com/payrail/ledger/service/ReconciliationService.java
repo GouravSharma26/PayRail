@@ -1,34 +1,47 @@
 package com.payrail.ledger.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.payrail.account.domain.AccountRecord;
 import com.payrail.account.repository.AccountRepository;
 import com.payrail.common.exception.ResourceNotFoundException;
 import com.payrail.ledger.domain.LedgerEntryRecord;
 import com.payrail.ledger.domain.LedgerLeg;
 import com.payrail.ledger.repository.LedgerRepository;
+import com.payrail.reconciliation.domain.ReconciliationIssueRecord;
+import com.payrail.reconciliation.domain.ReconciliationRunRecord;
+import com.payrail.reconciliation.repository.ReconciliationIssueRepository;
+import com.payrail.reconciliation.repository.ReconciliationRunRepository;
 import com.payrail.transfer.domain.TransferRecord;
 import com.payrail.transfer.domain.TransferStatus;
 import com.payrail.transfer.repository.TransferRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
  * Continuous audit and reconciliation engine.
- * Detects discrepancies between ledger entries, account balances, and transfer states.
+ * Detects discrepancies between ledger entries, account balances, transfer states,
+ * and operational queues.
  * Under no circumstances does reconciliation auto-repair or alter ledger history.
  */
 @Service
-@Transactional(readOnly = true)
 public class ReconciliationService {
 
     private static final Logger log = LoggerFactory.getLogger(ReconciliationService.class);
@@ -37,23 +50,39 @@ public class ReconciliationService {
     private final AccountRepository accountRepository;
     private final TransferRepository transferRepository;
     private final LedgerRepository ledgerRepository;
+    private final ReconciliationRunRepository runRepository;
+    private final ReconciliationIssueRepository issueRepository;
+    private final ObjectMapper objectMapper;
+
+    @Value("${payrail.reconciliation.stale-processing-threshold:60s}")
+    private Duration staleProcessingThreshold;
+
+    @Value("${payrail.reconciliation.stale-outbox-threshold:30s}")
+    private Duration staleOutboxThreshold;
 
     public ReconciliationService(
             NamedParameterJdbcTemplate jdbcTemplate,
             AccountRepository accountRepository,
             TransferRepository transferRepository,
-            LedgerRepository ledgerRepository
+            LedgerRepository ledgerRepository,
+            @Autowired(required = false) ReconciliationRunRepository runRepository,
+            @Autowired(required = false) ReconciliationIssueRepository issueRepository,
+            ObjectMapper objectMapper
     ) {
         this.jdbcTemplate = jdbcTemplate;
         this.accountRepository = accountRepository;
         this.transferRepository = transferRepository;
         this.ledgerRepository = ledgerRepository;
+        this.runRepository = runRepository;
+        this.issueRepository = issueRepository;
+        this.objectMapper = objectMapper;
     }
 
     /**
      * Verifies that an individual account's stored current balance matches its
      * opening balance plus net ledger movements.
      */
+    @Transactional(readOnly = true)
     public boolean verifyAccountBalanceConsistency(UUID accountId) {
         AccountRecord account = accountRepository.findById(accountId)
                 .orElseThrow(() -> new ResourceNotFoundException("Account with identifier '" + accountId + "' was not found."));
@@ -72,6 +101,7 @@ public class ReconciliationService {
     /**
      * Verifies that a transfer has balanced double-entry ledger legs.
      */
+    @Transactional(readOnly = true)
     public boolean verifyTransferLedgerBalance(UUID transferId) {
         TransferRecord transfer = transferRepository.findById(transferId)
                 .orElseThrow(() -> new ResourceNotFoundException("Transfer with identifier '" + transferId + "' was not found."));
@@ -104,6 +134,7 @@ public class ReconciliationService {
     /**
      * Runs full database-wide audit across all accounts, transfers, and ledger entries.
      */
+    @Transactional(readOnly = true)
     public ReconciliationReport runFullAudit() {
         List<String> discrepancies = new ArrayList<>();
 
@@ -257,5 +288,143 @@ public class ReconciliationService {
                 totalLedgerEntries,
                 discrepancies
         );
+    }
+
+    /**
+     * Executes full audit, checks queues, and durably records reconciliation_runs and reconciliation_issues.
+     */
+    @Transactional
+    public ReconciliationRunRecord runAuditAndPersist(String triggerType) {
+        Instant startedAt = Instant.now();
+        UUID runId = UUID.randomUUID();
+        List<ReconciliationIssueRecord> issues = new ArrayList<>();
+
+        // 1. Run accounting audit
+        ReconciliationReport report = runFullAudit();
+        for (String discrepancy : report.discrepancyDetails()) {
+            issues.add(new ReconciliationIssueRecord(
+                    UUID.randomUUID(),
+                    runId,
+                    "ACCOUNTING_DISCREPANCY",
+                    "CRITICAL",
+                    null,
+                    null,
+                    null,
+                    startedAt,
+                    safeJson(Map.of("message", discrepancy)),
+                    "OPEN",
+                    null
+            ));
+        }
+
+        // 2. Check for stale processing leases
+        Instant staleProcessingTime = startedAt.minus(staleProcessingThreshold);
+        String staleProcessingSql = """
+                SELECT id, processing_attempt_count, processing_lease_until
+                FROM transfers
+                WHERE status = 'PROCESSING'
+                  AND processing_lease_until < :staleTime
+                """;
+        jdbcTemplate.query(staleProcessingSql, new MapSqlParameterSource("staleTime", Timestamp.from(staleProcessingTime)), (rs, rowNum) -> {
+            issues.add(new ReconciliationIssueRecord(
+                    UUID.randomUUID(),
+                    runId,
+                    "STALE_PROCESSING_LEASE",
+                    "WARNING",
+                    null,
+                    rs.getObject("id", UUID.class),
+                    null,
+                    startedAt,
+                    safeJson(Map.of(
+                            "leaseUntil", rs.getTimestamp("processing_lease_until").toString(),
+                            "attempts", rs.getInt("processing_attempt_count")
+                    )),
+                    "OPEN",
+                    null
+            ));
+            return null;
+        });
+
+        // 3. Check for stale unpublished outbox backlog
+        Instant staleOutboxTime = startedAt.minus(staleOutboxThreshold);
+        String staleOutboxSql = """
+                SELECT event_id, aggregate_id, created_at, publish_attempts
+                FROM outbox_events
+                WHERE published_at IS NULL
+                  AND created_at < :staleTime
+                """;
+        jdbcTemplate.query(staleOutboxSql, new MapSqlParameterSource("staleTime", Timestamp.from(staleOutboxTime)), (rs, rowNum) -> {
+            issues.add(new ReconciliationIssueRecord(
+                    UUID.randomUUID(),
+                    runId,
+                    "STALE_OUTBOX_EVENT",
+                    "WARNING",
+                    null,
+                    rs.getObject("aggregate_id", UUID.class),
+                    rs.getObject("event_id", UUID.class),
+                    startedAt,
+                    safeJson(Map.of(
+                            "createdAt", rs.getTimestamp("created_at").toString(),
+                            "publishAttempts", rs.getInt("publish_attempts")
+                    )),
+                    "OPEN",
+                    null
+            ));
+            return null;
+        });
+
+        // 4. Check for exhausted retry transfers
+        String exhaustedSql = "SELECT id, failure_code, failure_message FROM transfers WHERE failure_code = 'RETRY_EXHAUSTED'";
+        jdbcTemplate.query(exhaustedSql, new MapSqlParameterSource(), (rs, rowNum) -> {
+            issues.add(new ReconciliationIssueRecord(
+                    UUID.randomUUID(),
+                    runId,
+                    "RETRY_EXHAUSTED",
+                    "WARNING",
+                    null,
+                    rs.getObject("id", UUID.class),
+                    null,
+                    startedAt,
+                    safeJson(Map.of("failureMessage", rs.getString("failure_message"))),
+                    "OPEN",
+                    null
+            ));
+            return null;
+        });
+
+        Instant finishedAt = Instant.now();
+        String runStatus = issues.isEmpty() ? "CLEAN" : "DISCREPANCIES_DETECTED";
+        String summary = String.format("Scanned %d transfers, %d accounts; detected %d issues.",
+                report.totalTransfersChecked(), report.totalAccountsChecked(), issues.size());
+
+        ReconciliationRunRecord runRecord = new ReconciliationRunRecord(
+                runId,
+                startedAt,
+                finishedAt,
+                runStatus,
+                report.totalTransfersChecked(),
+                report.totalAccountsChecked(),
+                issues.size(),
+                triggerType,
+                summary
+        );
+
+        if (runRepository != null) {
+            runRepository.insert(runRecord);
+        }
+        if (issueRepository != null && !issues.isEmpty()) {
+            issueRepository.insertAll(issues);
+        }
+
+        log.info("Completed reconciliation run id={} status={} issues={}", runId, runStatus, issues.size());
+        return runRecord;
+    }
+
+    private String safeJson(Map<String, Object> map) {
+        try {
+            return objectMapper.writeValueAsString(map);
+        } catch (JsonProcessingException e) {
+            return "{}";
+        }
     }
 }

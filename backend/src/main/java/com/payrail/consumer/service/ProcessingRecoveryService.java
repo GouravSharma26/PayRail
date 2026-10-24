@@ -1,0 +1,265 @@
+package com.payrail.consumer.service;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.payrail.consumer.domain.DeadLetterEnvelope;
+import com.payrail.outbox.domain.OutboxEventRecord;
+import com.payrail.outbox.repository.OutboxRepository;
+import com.payrail.transfer.domain.TransferRecord;
+import com.payrail.transfer.domain.TransferStatus;
+import com.payrail.transfer.domain.TransferStatusHistoryRecord;
+import com.payrail.transfer.repository.TransferRepository;
+import com.payrail.transfer.repository.TransferStatusHistoryRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+@Service
+public class ProcessingRecoveryService {
+
+    private static final Logger log = LoggerFactory.getLogger(ProcessingRecoveryService.class);
+
+    private final TransferRepository transferRepository;
+    private final OutboxRepository outboxRepository;
+    private final TransferStatusHistoryRepository statusHistoryRepository;
+    private final DeadLetterPublisher deadLetterPublisher;
+    private final TransactionTemplate transactionTemplate;
+    private final ObjectMapper objectMapper;
+
+    @Value("${payrail.processing.recovery-sweep-enabled:true}")
+    private boolean recoverySweepEnabled;
+
+    @Value("${payrail.processing.max-attempts:5}")
+    private int maxAttempts;
+
+    @Value("${payrail.topics.transfer-commands:payrail.transfer-commands.v1}")
+    private String transferCommandsTopic;
+
+    @Value("${payrail.processing.stale-pending-threshold:30s}")
+    private Duration stalePendingThreshold;
+
+    public ProcessingRecoveryService(
+            TransferRepository transferRepository,
+            OutboxRepository outboxRepository,
+            TransferStatusHistoryRepository statusHistoryRepository,
+            DeadLetterPublisher deadLetterPublisher,
+            PlatformTransactionManager transactionManager,
+            ObjectMapper objectMapper
+    ) {
+        this.transferRepository = transferRepository;
+        this.outboxRepository = outboxRepository;
+        this.statusHistoryRepository = statusHistoryRepository;
+        this.deadLetterPublisher = deadLetterPublisher;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
+        this.objectMapper = objectMapper;
+    }
+
+    @Scheduled(fixedDelayString = "${payrail.processing.recovery-sweep-interval:15s}")
+    public int scheduledSweep() {
+        if (!recoverySweepEnabled) {
+            return 0;
+        }
+        return runRecoverySweep();
+    }
+
+    /**
+     * Executes a full recovery sweep across stale processing leases, stale outbox leases,
+     * and orphaned pending transfers. Can be called directly by scheduler, tests, or ops.
+     */
+    public int runRecoverySweep() {
+        int totalRecovered = 0;
+        totalRecovered += sweepStaleProcessingLeases();
+        totalRecovered += sweepStaleOutboxLeases();
+        totalRecovered += sweepStalePendingTransfers();
+        return totalRecovered;
+    }
+
+    public int sweepStaleProcessingLeases() {
+        Instant now = Instant.now();
+        List<TransferRecord> staleTransfers = transferRepository.findStaleProcessingLeases(now);
+        if (staleTransfers.isEmpty()) {
+            return 0;
+        }
+
+        log.info("Found {} stale processing lease(s) requiring recovery sweep", staleTransfers.size());
+        int recovered = 0;
+
+        for (TransferRecord stale : staleTransfers) {
+            Boolean result = transactionTemplate.execute(status -> recoverStaleTransfer(stale.id()));
+            if (Boolean.TRUE.equals(result)) {
+                recovered++;
+            }
+        }
+        return recovered;
+    }
+
+    private boolean recoverStaleTransfer(UUID transferId) {
+        Instant now = Instant.now();
+        Optional<TransferRecord> transferOpt = transferRepository.findByIdForUpdate(transferId);
+        if (transferOpt.isEmpty()) {
+            return false;
+        }
+
+        TransferRecord transfer = transferOpt.get();
+        if (transfer.status() != TransferStatus.PROCESSING) {
+            return false;
+        }
+
+        if (transfer.processingLeaseUntil() != null && transfer.processingLeaseUntil().isAfter(now)) {
+            return false; // lease renewed in the interim
+        }
+
+        if (transfer.processingAttemptCount() >= maxAttempts) {
+            transferRepository.completeProcessing(
+                    transferId,
+                    TransferStatus.FAILED,
+                    "LEASE_EXPIRED_EXHAUSTED",
+                    "Processing lease expired after reaching max attempts (" + maxAttempts + ")",
+                    now,
+                    now
+            );
+
+            statusHistoryRepository.insert(new TransferStatusHistoryRecord(
+                    null,
+                    transferId,
+                    TransferStatus.PROCESSING,
+                    TransferStatus.FAILED,
+                    "LEASE_EXPIRED_EXHAUSTED",
+                    transfer.processingAttemptCount(),
+                    transfer.correlationId(),
+                    now
+            ));
+
+            deadLetterPublisher.publish(new DeadLetterEnvelope(
+                    transferCommandsTopic,
+                    null,
+                    transferId,
+                    "LEASE_EXPIRED_EXHAUSTED",
+                    "Stale processing lease expired and max attempts exhausted",
+                    transfer.processingAttemptCount(),
+                    now,
+                    null
+            ));
+
+            log.warn("Stale transfer id={} exhausted max attempts; marked FAILED and sent to DLQ.", transferId);
+            return true;
+
+        } else {
+            // Reset to PENDING and enqueue retry outbox event
+            transferRepository.resetToPending(transferId, now);
+
+            statusHistoryRepository.insert(new TransferStatusHistoryRecord(
+                    null,
+                    transferId,
+                    TransferStatus.PROCESSING,
+                    TransferStatus.PENDING,
+                    "STALE_LEASE_RECOVERED",
+                    transfer.processingAttemptCount(),
+                    transfer.correlationId(),
+                    now
+            ));
+
+            String retryPayload;
+            try {
+                retryPayload = objectMapper.writeValueAsString(Map.of(
+                        "transferId", transferId.toString(),
+                        "recoveredAttempt", transfer.processingAttemptCount() + 1
+                ));
+            } catch (JsonProcessingException e) {
+                throw new IllegalStateException("Failed to serialize recovery retry payload", e);
+            }
+
+            OutboxEventRecord recoveryEvent = new OutboxEventRecord(
+                    UUID.randomUUID(),
+                    "transfer",
+                    transferId,
+                    transfer.processingAttemptCount() + 1L,
+                    "transfer.recovery",
+                    1,
+                    retryPayload,
+                    transfer.correlationId(),
+                    now,
+                    now,
+                    null,
+                    0,
+                    null,
+                    null,
+                    null,
+                    null
+            );
+            outboxRepository.insert(recoveryEvent);
+
+            log.info("Recovered stale processing lease on transfer id={}; returned to PENDING and enqueued outbox recovery event.", transferId);
+            return true;
+        }
+    }
+
+    public int sweepStaleOutboxLeases() {
+        Instant now = Instant.now();
+        int released = outboxRepository.releaseStaleLeases(now);
+        if (released > 0) {
+            log.info("Released {} stale outbox publisher lease(s)", released);
+        }
+        return released;
+    }
+
+    public int sweepStalePendingTransfers() {
+        Instant threshold = Instant.now().minus(stalePendingThreshold);
+        List<TransferRecord> abandonedPending = transferRepository.findPendingWithoutOutbox(threshold);
+        if (abandonedPending.isEmpty()) {
+            return 0;
+        }
+
+        int recovered = 0;
+        for (TransferRecord pending : abandonedPending) {
+            Boolean result = transactionTemplate.execute(status -> {
+                Instant now = Instant.now();
+                String payload;
+                try {
+                    payload = objectMapper.writeValueAsString(Map.of("transferId", pending.id().toString()));
+                } catch (JsonProcessingException e) {
+                    throw new IllegalStateException("Failed to serialize recovery payload", e);
+                }
+
+                OutboxEventRecord recoveryEvent = new OutboxEventRecord(
+                        UUID.randomUUID(),
+                        "transfer",
+                        pending.id(),
+                        pending.processingAttemptCount() + 1L,
+                        "transfer.requested",
+                        1,
+                        payload,
+                        pending.correlationId(),
+                        now,
+                        now,
+                        null,
+                        0,
+                        null,
+                        null,
+                        null,
+                        null
+                );
+                outboxRepository.insert(recoveryEvent);
+                return true;
+            });
+            if (Boolean.TRUE.equals(result)) {
+                recovered++;
+            }
+        }
+        if (recovered > 0) {
+            log.info("Recovered {} abandoned pending transfer(s) by enqueuing outbox events", recovered);
+        }
+        return recovered;
+    }
+}

@@ -36,15 +36,15 @@ Use checkboxes only after verified implementation. Initially all implementation 
 
 ## Phase 3 — Asynchronous processing
 
-- [ ] Outbox publisher has durable lease, bounded batch and retry policy.
-- [ ] Publish occurs outside DB transaction; published marker follows broker ack.
-- [ ] Event envelope is versioned and uses transfer ID key.
-- [ ] Consumer dedupe and terminal state guard are implemented.
-- [ ] Retry scheduling and original-event dedupe are atomic.
-- [ ] DLQ handling is bounded, inspectable, and non-successful by default.
-- [ ] Expired lease/outbox recovery is idempotent and multi-instance safe.
-- [ ] Broker and DB outage/duplicate/crash tests pass.
-- [ ] Delivery semantics are accurately described as at-least-once + idempotent effects.
+- [x] Outbox publisher has durable lease, bounded batch and retry policy.
+- [x] Publish occurs outside DB transaction; published marker follows broker ack.
+- [x] Event envelope is versioned and uses transfer ID key.
+- [x] Consumer dedupe and terminal state guard are implemented.
+- [x] Retry scheduling and original-event dedupe are atomic.
+- [x] DLQ handling is bounded, inspectable, and non-successful by default.
+- [x] Expired lease/outbox recovery is idempotent and multi-instance safe.
+- [x] Broker and DB outage/duplicate/crash tests pass.
+- [x] Delivery semantics are accurately described as at-least-once + idempotent effects.
 
 ## Phase 4 — Operations and CI
 

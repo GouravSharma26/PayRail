@@ -259,7 +259,59 @@
   - Migration: Fresh database migrates cleanly through V1–V6; upgrade test from historical V1/V2 database applies V3–V6 cleanly with `validate-on-migrate` and 0 checksum mismatches.
 - **Not verified / blocked:** Phase 3 Kafka outbox publishing, event consumers, DLQ, and lease recovery (intentionally deferred to Phase 3).
 - **Known limitations:** None for Phase 2.
-- **Reviewer notes / follow-up:** Phase 2 Final Invariant Hardening complete. All invariant gaps closed at database engine level. Ready for independent review and approval.
+### 2026-10-24 — Phase 3: Asynchronous processing, leased outbox publisher, consumer deduplication, retries, DLQ, and lease recovery
+
+- **Commit:** `2ca6266`
+- **Scope:** Implementation of leased transactional outbox publisher with publication outside the DB transaction and `published_at` set only after broker acknowledgment, asynchronous Kafka consumer with versioned event envelope (`schema_version: 1`), consumer deduplication via `processed_messages`, terminal-transfer state guards, durable retry scheduling with bounded exponential backoff, dead-letter routing (`payrail.transfer-commands.dlq.v1`), stale outbox and processing lease recovery, and persistent reconciliation auditing.
+- **Files changed:**
+  - `backend/src/main/java/com/payrail/config/KafkaConfig.java` (Topic declarations for `payrail.transfer-commands.v1` and `payrail.transfer-commands.dlq.v1`)
+  - `backend/src/main/java/com/payrail/config/SchedulingConfig.java` (Enables scheduling via `@EnableScheduling`)
+  - `backend/src/main/java/com/payrail/outbox/domain/EventEnvelope.java` (Versioned event envelope with transfer ID partition key)
+  - `backend/src/main/java/com/payrail/outbox/service/OutboxPublisherService.java` (Leased outbox publisher with batching, broker ack callback, failure backoff, and crash injector)
+  - `backend/src/main/java/com/payrail/outbox/service/OutboxPublisherCrashInjector.java` (Test harness crash injector hook)
+  - `backend/src/main/java/com/payrail/outbox/repository/OutboxRepository.java` & `JdbcOutboxRepository.java` (Claim due events with lease token, mark published on ack, record publish failures, release stale leases)
+  - `backend/src/main/java/com/payrail/consumer/domain/ProcessedMessageRecord.java` & `repository/*` (Message deduplication persistence)
+  - `backend/src/main/java/com/payrail/consumer/domain/DeadLetterEnvelope.java` & `service/DeadLetterPublisher.java` (DLQ publisher with error code, message, and failed payload)
+  - `backend/src/main/java/com/payrail/consumer/service/AsyncTransferProcessor.java` (Orchestrates short claim transactions, atomic double-entry posting, permanent business declines, transient retry scheduling, and retry exhaustion DLQ routing)
+  - `backend/src/main/java/com/payrail/consumer/service/AsyncProcessingFailureInjector.java` (Test hook for transient technical failure injection)
+  - `backend/src/main/java/com/payrail/consumer/service/TransferCommandConsumer.java` (`@KafkaListener` handling JSON validation, schema version checks, malformed payload DLQ routing, message deduplication, and async processing dispatch)
+  - `backend/src/main/java/com/payrail/consumer/service/ProcessingRecoveryService.java` (Periodic lease recovery for stale processing leases, stale outbox leases, and orphaned pending transfers)
+  - `backend/src/main/java/com/payrail/reconciliation/domain/*` & `repository/*` (Persisted reconciliation run and issue entities)
+  - `backend/src/main/java/com/payrail/ledger/service/ReconciliationService.java` (Enhanced audit scan with durable PostgreSQL run/issue persistence without auto-repair)
+  - `backend/src/main/resources/application.yml` (Declared Phase 3 outbox, Kafka, processing, retry, and lease configuration properties)
+  - `backend/src/main/resources/application-test.yml` (Disabled background schedulers and auto-consumers by default in tests for deterministic test isolation)
+  - `backend/src/test/java/com/payrail/BaseIntegrationTest.java` (Configured singleton Testcontainers Kafka 3.8.1 alongside PostgreSQL 16.8)
+  - `backend/src/test/java/com/payrail/DefaultRuntimeIntegrationTest.java` (Configured Kafka `@ServiceConnection`, `@DirtiesContext`, and isolated background tasks)
+  - `backend/src/test/java/com/payrail/OutboxPublisherIntegrationTest.java` (Verified leased outbox batch claiming, broker publication, broker ack marking published_at, and uncommitted outbox rows)
+  - `backend/src/test/java/com/payrail/BrokerConsumerDeduplicationIntegrationTest.java` (Verified duplicate Kafka event consumption produces zero duplicate ledger entries and idempotent processing)
+  - `backend/src/test/java/com/payrail/PublisherCrashRecoveryIntegrationTest.java` (Verified publisher crash after broker publish is recovered on lease expiry and duplicate publication is safely deduplicated)
+  - `backend/src/test/java/com/payrail/BrokerOutageRecoveryIntegrationTest.java` (Verified Kafka broker outage triggers publisher exponential backoff and recovers automatically upon broker restoration)
+  - `backend/src/test/java/com/payrail/PermanentBusinessFailureIntegrationTest.java` (Verified permanent business decline like insufficient funds transitions transfer to FAILED with BUSINESS_DECLINED attempt, zero ledger entries, and no retries)
+  - `backend/src/test/java/com/payrail/TransientRetryAndExhaustionIntegrationTest.java` (Verified transient failure schedules durable retry with exponential backoff and succeeds on subsequent attempt; verified retry exhaustion after max attempts marks FAILED and routes to DLQ)
+  - `backend/src/test/java/com/payrail/StaleLeaseRecoveryIntegrationTest.java` (Verified expired processing leases and expired outbox leases are reclaimed by recovery sweeps)
+  - `backend/src/test/java/com/payrail/MalformedEventDlqIntegrationTest.java` (Verified malformed JSON and unsupported schema versions are routed directly to DLQ without executing financial mutations)
+  - `backend/src/test/java/com/payrail/ReconciliationJobIntegrationTest.java` (Verified reconciliation audit detects balance mismatches, double-entry discrepancies, outbox backlog, and persists runs and issues to PostgreSQL without auto-repair)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (Checked off all 9 Phase 3 verification items)
+  - `docs/MODEL_AND_TECH_DECISIONS.md` (Recorded ADR-013)
+  - `docs/PHASE_LOG.md` (Recorded Phase 3 execution evidence)
+- **Design decision(s):**
+  - ADR-013: Model messaging delivery as at-least-once with idempotent consumer postings (never whole-system exactly-once). Claim outbox records with lease tokens; publish to Kafka outside database transaction; mark `published_at` only upon broker acknowledgment. Enforce deduplication via `processed_messages` and terminal-transfer state guards. Distinguish permanent business declines from transient technical failures. Schedule retries durably in PostgreSQL. Emit poison pills and exhausted retries to DLQ. Periodically recover stale processing and outbox leases without auto-repairing balances or ledgers.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 100 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 30.437s, 100 tests run, 0 failures, 0 errors, 0 skipped; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+- **Test results:** unit `33 passed / 0 failed`; integration `67 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (100 total tests passing).
+- **Acceptance criteria verified:**
+  - Leased transactional outbox publisher claims due events, publishes outside DB transactions, and updates `published_at` only after broker acknowledgment.
+  - Event envelope is versioned with transfer ID partition key.
+  - Broker consumer deduplication (`processed_messages`) and terminal-transfer guard prevent duplicate financial postings.
+  - Permanent business declines (e.g., insufficient funds) terminalize to `FAILED` with no ledger entries and no retries.
+  - Transient failures undergo durable exponential retry scheduling.
+  - Retry exhaustion routes event to `payrail.transfer-commands.dlq.v1` and sets transfer `FAILED`.
+  - Stale processing leases and stale outbox leases are recovered periodically.
+  - Testcontainers tests pass for broker outages, duplicate delivery, publisher crashes, transient failures, and recovery.
+- **Not verified / blocked:** Phase 4 Operations and CI (Actuator metrics, health checks, Docker Compose multi-service verification, CI workflow enhancements; scheduled for Phase 4).
+- **Known limitations:** None for Phase 3.
+- **Reviewer notes / follow-up:** Phase 3 complete. All gate criteria verified. Waiting at Phase 3 gate for approval.
 
 ## Entry template
 

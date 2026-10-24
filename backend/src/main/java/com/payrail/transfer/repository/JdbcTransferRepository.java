@@ -8,7 +8,9 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.math.BigDecimal;
 import java.sql.Timestamp;
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -155,8 +157,8 @@ public class JdbcTransferRepository implements TransferRepository {
             TransferStatus status,
             String failureCode,
             String failureMessage,
-            java.time.Instant completedAt,
-            java.time.Instant updatedAt
+            Instant completedAt,
+            Instant updatedAt
     ) {
         String sql = """
                 UPDATE transfers
@@ -176,5 +178,112 @@ public class JdbcTransferRepository implements TransferRepository {
                 .addValue("updatedAt", Timestamp.from(updatedAt));
 
         return jdbcTemplate.update(sql, params);
+    }
+
+    @Override
+    public boolean claimForProcessing(UUID id, UUID claimToken, Instant leaseUntil, Instant now) {
+        String sql = """
+                UPDATE transfers
+                SET status = 'PROCESSING',
+                    processing_claim_token = :claimToken,
+                    processing_lease_until = :leaseUntil,
+                    processing_attempt_count = processing_attempt_count + 1,
+                    updated_at = :now
+                WHERE id = :id
+                  AND (status = 'PENDING' OR (status = 'PROCESSING' AND processing_lease_until < :now))
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("id", id)
+                .addValue("claimToken", claimToken)
+                .addValue("leaseUntil", Timestamp.from(leaseUntil))
+                .addValue("now", Timestamp.from(now));
+
+        return jdbcTemplate.update(sql, params) > 0;
+    }
+
+    @Override
+    public int completeProcessing(
+            UUID id,
+            TransferStatus status,
+            String failureCode,
+            String failureMessage,
+            Instant completedAt,
+            Instant updatedAt
+    ) {
+        String sql = """
+                UPDATE transfers
+                SET status = :status,
+                    failure_code = :failureCode,
+                    failure_message = :failureMessage,
+                    completed_at = :completedAt,
+                    processing_claim_token = NULL,
+                    processing_lease_until = NULL,
+                    updated_at = :updatedAt
+                WHERE id = :id
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("id", id)
+                .addValue("status", status.name())
+                .addValue("failureCode", failureCode)
+                .addValue("failureMessage", failureMessage)
+                .addValue("completedAt", completedAt != null ? Timestamp.from(completedAt) : null)
+                .addValue("updatedAt", Timestamp.from(updatedAt));
+
+        return jdbcTemplate.update(sql, params);
+    }
+
+    @Override
+    public int resetToPending(UUID id, Instant updatedAt) {
+        String sql = """
+                UPDATE transfers
+                SET status = 'PENDING',
+                    processing_claim_token = NULL,
+                    processing_lease_until = NULL,
+                    updated_at = :updatedAt
+                WHERE id = :id
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("id", id)
+                .addValue("updatedAt", Timestamp.from(updatedAt));
+
+        return jdbcTemplate.update(sql, params);
+    }
+
+    @Override
+    public List<TransferRecord> findStaleProcessingLeases(Instant threshold) {
+        String sql = """
+                SELECT *
+                FROM transfers
+                WHERE status = 'PROCESSING'
+                  AND processing_lease_until < :threshold
+                ORDER BY created_at ASC
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource("threshold", Timestamp.from(threshold));
+        return jdbcTemplate.query(sql, params, ROW_MAPPER);
+    }
+
+    @Override
+    public List<TransferRecord> findPendingWithoutOutbox(Instant threshold) {
+        String sql = """
+                SELECT t.*
+                FROM transfers t
+                WHERE t.status = 'PENDING'
+                  AND t.created_at <= :threshold
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM outbox_events o
+                      WHERE o.aggregate_type = 'transfer'
+                        AND o.aggregate_id = t.id
+                        AND o.published_at IS NULL
+                  )
+                ORDER BY t.created_at ASC
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource("threshold", Timestamp.from(threshold));
+        return jdbcTemplate.query(sql, params, ROW_MAPPER);
     }
 }

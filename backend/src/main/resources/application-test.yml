@@ -7,8 +7,14 @@ spring:
 payrail:
   seed:
     enabled: false
+  outbox:
+    publisher-enabled: false
+    poll-interval: 100ms
   processing:
     manual-endpoint-enabled: true
+    consumer-enabled: false
+    recovery-sweep-enabled: false
+    recovery-sweep-interval: 500ms
 
 logging:
   level:

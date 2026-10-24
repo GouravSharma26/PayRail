@@ -8,6 +8,7 @@ import org.springframework.boot.testcontainers.service.connection.ServiceConnect
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
@@ -17,12 +18,18 @@ public abstract class BaseIntegrationTest {
     @ServiceConnection
     protected static final PostgreSQLContainer<?> postgres;
 
+    @ServiceConnection
+    protected static final KafkaContainer kafka;
+
     static {
         postgres = new PostgreSQLContainer<>(DockerImageName.parse("postgres:16.8-alpine"))
                 .withDatabaseName("payrail_test")
                 .withUsername("test_user")
                 .withPassword("test_secret");
         postgres.start();
+
+        kafka = new KafkaContainer(DockerImageName.parse("apache/kafka:3.8.1"));
+        kafka.start();
     }
 
     @Autowired

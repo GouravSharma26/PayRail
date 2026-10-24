@@ -94,6 +94,38 @@ An independent review of Phase 2 commit `e1180b2` identified two remaining datab
    - Verified that a fresh database migrates cleanly through V1–V6.
    - Verified that an upgrade test carrying the original historical V1/V2 database migrates through V6 with `validate-on-migrate` enabled and zero checksum mismatches.
 
+## ADR-013 — Asynchronous Processing, Leased Outbox Publishing, Broker Consumption, Retries, and Recovery
+**Context:**
+Phase 3 establishes the asynchronous messaging backbone for PayRail. Transfers accepted via `POST /api/v1/transfers` are persisted in `PENDING` status along with a transactional outbox event. The goal is to safely deliver transfer commands across Apache Kafka, process them asynchronously with atomic ledger postings, handle transient outages and duplicate events gracefully, and recover from publisher or worker crashes.
+
+**Decisions:**
+1. **At-Least-Once Delivery with Idempotent Consumer Postings:**
+   - The messaging pipeline is strictly modeled as **at-least-once delivery with idempotent effects**. PayRail explicitly rejects claims of end-to-end "exactly-once" messaging.
+   - Idempotency is enforced at multiple layers:
+     - Deduplication table `processed_messages`: Tracks `(message_id, consumer_group, processed_at)` with a primary key constraint.
+     - Terminal state guard: `transfers` already in `SUCCEEDED` or `FAILED` status ignore redelivered events and immediately mark the incoming message processed without executing duplicate ledger or balance writes.
+2. **Leased Transactional Outbox Publisher (`OutboxPublisherService`):**
+   - Outbox rows are claimed using a short database transaction with `FOR UPDATE SKIP LOCKED` setting a randomized `lease_token` (UUID) and `leased_until = now() + leaseDuration`.
+   - Publication to Kafka topic `payrail.transfer-commands.v1` occurs **outside the database transaction**.
+   - The database row is updated with `published_at = now()` and `lease_token = null` **only after the broker confirms acknowledgment** via `CompletableFuture<SendResult>`.
+   - If publication fails or times out, the publisher executes a bounded exponential backoff with jitter on `available_at` and increments `publish_attempts`.
+   - If the publisher crashes after broker delivery but before recording `published_at`, the lease expires, another publisher cycle republishes the event, and the consumer's deduplication and terminal-state guard neutralize the duplicate.
+3. **Kafka Partitioning and Envelope Versioning:**
+   - Events are routed to `payrail.transfer-commands.v1` using `transfer_id.toString()` as the partition key, ensuring strict per-transfer ordering.
+   - The event payload is wrapped in `EventEnvelope<T>` containing `event_id`, `event_type` (`TRANSFER_COMMAND`), `aggregate_type` (`TRANSFER`), `aggregate_id` (`transfer_id`), `timestamp`, `schema_version` (`1`), and the canonical payload.
+4. **Transient vs. Permanent Failure Classification & Retry Scheduling:**
+   - **Permanent Business Decline:** e.g., `INSUFFICIENT_FUNDS`, `ACCOUNT_INACTIVE`, or `CURRENCY_MISMATCH`. These are recorded in `processing_attempts` as `BUSINESS_DECLINED`, transfer transitions to terminal `FAILED`, no retries are scheduled, and no DLQ message is emitted.
+   - **Transient Technical Failure:** e.g., database timeout or network outage. The attempt is logged as `TECHNICAL_FAILURE`. If `attempt < maxAttempts`, a durable retry is scheduled by resetting the transfer to `PENDING` with an exponential backoff available_at (`initialBackoff * 2^(attempt-1) + jitter`).
+   - **Retry Exhaustion:** When `attempt >= maxAttempts`, the transfer is transitioned to `FAILED`, and a dead-letter envelope is emitted to `payrail.transfer-commands.dlq.v1` containing the error details and full payload.
+   - **Poison Pills & Malformed Messages:** If a Kafka record contains unparseable JSON or an unsupported `schema_version`, it is routed immediately to `payrail.transfer-commands.dlq.v1` with failure code `DESERIALIZATION_ERROR` or `UNSUPPORTED_SCHEMA_VERSION`, preventing consumer partition starvation.
+5. **Durable Lease Recovery Sweeps (`ProcessingRecoveryService`):**
+   - Runs periodically to reclaim abandoned work across multiple nodes:
+     - Stale processing leases (`status = 'PROCESSING'` where `lease_expires_at < now()`) are reclaimed and scheduled for retry.
+     - Stale outbox leases (`published_at IS NULL` where `leased_until < now()`) are released back to available.
+     - Orphaned transfers (`status = 'PENDING'` with no active outbox record and expired available_at) have outbox records re-created.
+6. **Persisted Reconciliation Auditing (`JdbcReconciliationRunRepository`):**
+   - Phase 3 implements persistent storage for `reconciliation_runs` and `reconciliation_issues` in PostgreSQL, recording double-entry integrity, account balance projections, outbox backlog, stale leases, and retry exhaustion without performing silent auto-repairs.
+
 ## Exact version record (verified 2026-10-24)
 
 | Component | Pinned version/tag | Compatibility verified against | Official source | Date |

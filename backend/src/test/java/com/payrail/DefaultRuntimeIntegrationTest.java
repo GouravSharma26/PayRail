@@ -15,16 +15,28 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import org.springframework.test.annotation.DirtiesContext;
+import org.springframework.test.context.TestPropertySource;
+
 /**
  * Verifies that when SPRING_PROFILES_ACTIVE is unset, PayRail starts in the default safe profile:
  * - Development seed data (DevDataSeeder) is NOT registered and does not run.
  * - The manual transfer posting endpoint is NOT registered and returns 404.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@DirtiesContext
+@TestPropertySource(properties = {
+        "payrail.outbox.publisher-enabled=false",
+        "payrail.processing.consumer-enabled=false",
+        "payrail.processing.recovery-sweep-enabled=false"
+})
 class DefaultRuntimeIntegrationTest {
 
     @ServiceConnection
     static final PostgreSQLContainer<?> postgres = BaseIntegrationTest.postgres;
+
+    @ServiceConnection
+    static final org.testcontainers.kafka.KafkaContainer kafka = BaseIntegrationTest.kafka;
 
     @Autowired
     private TestRestTemplate restTemplate;
