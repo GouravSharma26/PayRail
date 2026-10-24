@@ -79,7 +79,7 @@ Keep configuration externalized, with conservative defaults, such as `max-attemp
 ## 8. Recovery sweep
 
 A scheduled recovery sweep detects and safely acts on:
-- Processing lease expired beyond a grace period: In the same transaction as the transfer reset, finalizes the affected stale attempt record fenced by `(transfer_id = :transferId AND attempt_number = :attemptNumber AND claim_token = :claimToken AND outcome = 'IN_PROGRESS')`. If below attempt limit, sets attempt outcome to `RETRY_SCHEDULED`, resets transfer to `PENDING`, and enqueues recovery command event. If at attempt limit, sets attempt outcome to `EXHAUSTED` (`LEASE_EXPIRED`), transitions transfer to `FAILED`, and enqueues DLQ record.
+- Processing lease expired beyond a grace period: In the same transaction as the transfer reset, finalizes the affected stale attempt record fenced by `(transfer_id = :transferId AND attempt_number = :attemptNumber AND claim_token = :claimToken AND outcome = 'IN_PROGRESS')`. If below attempt limit, sets attempt outcome to `RETRY_SCHEDULED`, resets transfer to `PENDING`, and enqueues recovery command event. If at attempt limit, sets attempt outcome to `EXHAUSTED` (`LEASE_EXPIRED`), transitions transfer to `FAILED`, and enqueues DLQ record. Each stale processing candidate runs in an isolated `TransactionTemplate` transaction; a failed fenced finalization rolls back that candidate's complete transaction, logs the error, and allows the sweep to continue processing other stale candidates and subsequent recovery categories (`sweepStaleOutboxLeases()` and `sweepStalePendingTransfers()`).
 - Unpublished outbox event with expired lease: releases stale publisher lease.
 - Stale `PENDING` transfers: locks candidate transfer `FOR UPDATE`, verifies `status == PENDING` and that no unpublished or exhausted outbox events exist (`hasUnpublishedEvents == false`). A transfer with a `PUBLISH_RETRY_EXHAUSTED` event does not acquire endless replacement command events; recovery requires explicit operator replay. Unrelated candidates recover independently even if one encounters a conflict.
 - Technical retry exhaustion and outbox publish exhaustion (`PUBLISH_RETRY_EXHAUSTED`) are flagged in continuous reconciliation.
@@ -117,6 +117,7 @@ Document and test these cases:
 | Concurrent DLQ events for same transfer | Independent aggregate identity (`aggregate_type = 'dlq'`, `aggregate_id = eventId`) guarantees zero sequence collisions |
 | Stale processing lease below retry cap | Finalizes stale attempt as `RETRY_SCHEDULED`, resets transfer to `PENDING`, enqueues recovery command |
 | Stale processing lease at retry cap | Finalizes stale attempt as `EXHAUSTED` (`LEASE_EXPIRED`), transitions transfer to `FAILED`, enqueues DLQ event |
+| Stale candidate with mismatched claim token | Transaction rolls back completely; candidate unchanged (IN_PROGRESS); sweep continues to other candidates and sweep categories |
 | Stale PENDING transfer with exhausted outbox event | Ignored by automatic recovery sweep; no duplicate commands generated; resumes upon operator replay |
 | Client timeout after API commit | Same idempotency key returns the same transfer |
 | Duplicate message delivered twice | One logical transfer result and one ledger pair at most |

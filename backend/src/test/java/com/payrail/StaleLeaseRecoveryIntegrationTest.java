@@ -700,9 +700,8 @@ class StaleLeaseRecoveryIntegrationTest extends BaseIntegrationTest {
         int historyBefore = statusHistoryRepository.findByTransferId(transferId).size();
         long outboxBefore = countOutboxRowsForTransfer(transferId);
 
-        assertThatThrownBy(() -> processingRecoveryService.sweepStaleProcessingLeases())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Failed to finalize stale processing attempt");
+        int recovered = processingRecoveryService.sweepStaleProcessingLeases();
+        assertThat(recovered).isEqualTo(0);
 
         TransferRecord transfer = transferRepository.findById(transferId).orElseThrow();
         assertThat(transfer.status()).isEqualTo(TransferStatus.PROCESSING);
@@ -726,9 +725,8 @@ class StaleLeaseRecoveryIntegrationTest extends BaseIntegrationTest {
         int historyBefore = statusHistoryRepository.findByTransferId(transferId).size();
         long outboxBefore = countOutboxRowsForTransfer(transferId);
 
-        assertThatThrownBy(() -> processingRecoveryService.sweepStaleProcessingLeases())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Failed to finalize stale processing attempt");
+        int recovered = processingRecoveryService.sweepStaleProcessingLeases();
+        assertThat(recovered).isEqualTo(0);
 
         TransferRecord transfer = transferRepository.findById(transferId).orElseThrow();
         assertThat(transfer.status()).isEqualTo(TransferStatus.PROCESSING);
@@ -741,6 +739,69 @@ class StaleLeaseRecoveryIntegrationTest extends BaseIntegrationTest {
         assertThat(attempt.claimToken()).isEqualTo(mismatchedAttemptToken);
         assertThat(attempt.outcome()).isEqualTo("IN_PROGRESS");
         assertThat(attempt.finishedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("Inconsistent stale candidate failure is isolated and does not block other candidates or sweep categories")
+    void shouldIsolateCandidateFailuresAndContinueSweepAcrossCategories() throws Exception {
+        // Candidate 1: Inconsistent attempt claim token (bad candidate)
+        UUID badTransferClaimToken = UUID.randomUUID();
+        UUID mismatchedAttemptToken = UUID.randomUUID();
+        UUID badTransferId = createStaleProcessingTransfer("50.00", 1, badTransferClaimToken, mismatchedAttemptToken);
+        int historyBefore1 = statusHistoryRepository.findByTransferId(badTransferId).size();
+        long outboxBefore1 = countOutboxRowsForTransfer(badTransferId);
+
+        // Candidate 2: Valid matching attempt claim token (good candidate)
+        UUID goodTransferClaimToken = UUID.randomUUID();
+        UUID goodTransferId = createStaleProcessingTransfer("70.00", 1, goodTransferClaimToken, goodTransferClaimToken);
+        int historyBefore2 = statusHistoryRepository.findByTransferId(goodTransferId).size();
+        long outboxBefore2 = countOutboxRowsForTransfer(goodTransferId);
+
+        // Candidate 3: Another recovery category (stale pending transfer with missing outbox event)
+        String pendingKey = "key-stale-pending-isolated-" + UUID.randomUUID();
+        CreateTransferRequest pendingReq = new CreateTransferRequest(accountAId, accountBId, "30.00", "INR");
+        ResponseEntity<TransferResponse> pendingResp = restTemplate.exchange(
+                "/api/v1/transfers",
+                HttpMethod.POST,
+                new HttpEntity<>(pendingReq, headersWith(pendingKey)),
+                TransferResponse.class
+        );
+        UUID pendingTransferId = pendingResp.getBody().id();
+        jdbcTemplate.update("DELETE FROM outbox_events WHERE aggregate_id = ?", pendingTransferId);
+        jdbcTemplate.update("UPDATE transfers SET created_at = now() - INTERVAL '10 minutes' WHERE id = ?", pendingTransferId);
+
+        // Run full recovery sweep across all categories
+        int totalRecovered = processingRecoveryService.runRecoverySweep();
+        assertThat(totalRecovered).isGreaterThanOrEqualTo(2);
+
+        // 1. Verify Candidate 1 was rolled back completely and remains unchanged
+        TransferRecord badTransfer = transferRepository.findById(badTransferId).orElseThrow();
+        assertThat(badTransfer.status()).isEqualTo(TransferStatus.PROCESSING);
+        assertThat(badTransfer.processingClaimToken()).isEqualTo(badTransferClaimToken);
+        assertThat(statusHistoryRepository.findByTransferId(badTransferId)).hasSize(historyBefore1);
+        assertThat(countOutboxRowsForTransfer(badTransferId)).isEqualTo(outboxBefore1);
+
+        ProcessingAttemptRecord badAttempt = processingAttemptRepository.findByTransferIdAndAttempt(badTransferId, 1).orElseThrow();
+        assertThat(badAttempt.claimToken()).isEqualTo(mismatchedAttemptToken);
+        assertThat(badAttempt.outcome()).isEqualTo("IN_PROGRESS");
+        assertThat(badAttempt.finishedAt()).isNull();
+
+        // 2. Verify Candidate 2 was successfully recovered
+        TransferRecord goodTransfer = transferRepository.findById(goodTransferId).orElseThrow();
+        assertThat(goodTransfer.status()).isEqualTo(TransferStatus.PENDING);
+        assertThat(goodTransfer.processingClaimToken()).isNull();
+        assertThat(goodTransfer.processingLeaseUntil()).isNull();
+        assertThat(statusHistoryRepository.findByTransferId(goodTransferId)).hasSize(historyBefore2 + 1);
+        assertThat(countOutboxRowsForTransfer(goodTransferId)).isEqualTo(outboxBefore2 + 1);
+
+        ProcessingAttemptRecord goodAttempt = processingAttemptRepository.findByTransferIdAndAttempt(goodTransferId, 1).orElseThrow();
+        assertThat(goodAttempt.outcome()).isEqualTo("RETRY_SCHEDULED");
+        assertThat(goodAttempt.finishedAt()).isNotNull();
+
+        // 3. Verify Candidate 3 from another category was also recovered by runRecoverySweep
+        TransferRecord recoveredPending = transferRepository.findById(pendingTransferId).orElseThrow();
+        assertThat(recoveredPending.status()).isEqualTo(TransferStatus.PENDING);
+        assertThat(countOutboxRowsForTransfer(pendingTransferId)).isGreaterThanOrEqualTo(1);
     }
 
     private UUID createStaleProcessingTransfer(

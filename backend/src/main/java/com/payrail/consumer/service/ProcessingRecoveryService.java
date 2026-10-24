@@ -100,9 +100,15 @@ public class ProcessingRecoveryService {
         int recovered = 0;
 
         for (TransferRecord stale : staleTransfers) {
-            Boolean result = transactionTemplate.execute(status -> recoverStaleTransfer(stale.id()));
-            if (Boolean.TRUE.equals(result)) {
-                recovered++;
+            try {
+                Boolean result = transactionTemplate.execute(status -> recoverStaleTransfer(stale.id()));
+                if (Boolean.TRUE.equals(result)) {
+                    recovered++;
+                }
+            } catch (Exception e) {
+                log.error("Failed to recover stale processing lease for transfer id={} [{}]: {}",
+                        stale.id(), e.getClass().getSimpleName(), e.getMessage(), e);
+                // Individual recovery failure rolls back that candidate's complete transaction and does not abort remaining candidates
             }
         }
         return recovered;

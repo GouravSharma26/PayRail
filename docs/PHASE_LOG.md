@@ -397,6 +397,30 @@
 - **Known limitations:** None for Phase 3.
 - **Reviewer notes / follow-up:** Phase 3 gate remediation complete. All gate criteria verified across 126 automated tests. Waiting at Phase 3 gate for independent review approval.
 
+### 2026-10-25 — Phase 3: Recovery-Sweep Resilience Correction
+
+- **Commit:** `59a6352`
+- **Scope:** Technical correction isolating individual candidate transactions within `ProcessingRecoveryService.sweepStaleProcessingLeases()`, preventing failed fenced attempt finalization from escaping the sweep loop or aborting subsequent recovery categories (`sweepStaleOutboxLeases()`, `sweepStalePendingTransfers()`).
+- **Files changed:**
+  - `backend/src/main/java/com/payrail/consumer/service/ProcessingRecoveryService.java` (wrapped candidate execution in try-catch around `transactionTemplate.execute(...)`; logged failure details at error level; allowed sweep loop to continue)
+  - `backend/src/test/java/com/payrail/StaleLeaseRecoveryIntegrationTest.java` (updated rollback tests to verify 0 returned without throwing unhandled exceptions; added `shouldIsolateCandidateFailuresAndContinueSweepAcrossCategories` testing bad candidate rollback, valid candidate recovery, and cross-category sweep execution)
+  - `docs/EVENTING_AND_FAILURES.md` (updated section 8 and failure injection matrix)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (updated checklist item and test count to 127)
+  - `docs/PHASE_LOG.md` (recorded verification evidence)
+- **Design decision(s):**
+  - Per-candidate transaction isolation in `sweepStaleProcessingLeases()` preserves fail-closed rollback for the invalid transfer while ensuring sweep resilience across remaining candidates and recovery phases.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 127 tests run, 0 failures, 0 errors, 0 skipped in 37.986s
+  - `.\mvnw.cmd -B verify` — PASS, 127 tests run, 0 failures, 0 errors, 0 skipped in 38.823s; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+- **Test results:** unit `33 passed / 0 failed`; integration `94 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (127 total tests passing).
+- **Acceptance criteria verified:**
+  - Mismatched claim token candidate rolls back completely (`status = PROCESSING`, attempt `IN_PROGRESS`, no history/outbox rows added).
+  - Valid candidate in the same sweep recovers successfully (`status = PENDING`, attempt `RETRY_SCHEDULED`, recovery outbox event created).
+  - Bad candidate does not prevent `runRecoverySweep()` from continuing to stale-outbox and stale-pending recovery categories.
+- **Not verified / blocked:** Phase 4 Operations and CI (scheduled for Phase 4).
+- **Known limitations:** None for Phase 3.
+- **Reviewer notes / follow-up:** Phase 3 recovery-sweep resilience correction complete. Ready for independent review.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name
