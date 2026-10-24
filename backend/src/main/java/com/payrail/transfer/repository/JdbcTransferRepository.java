@@ -141,4 +141,40 @@ public class JdbcTransferRepository implements TransferRepository {
             params.addValue("toDate", Timestamp.from(criteria.toDate()));
         }
     }
+
+    @Override
+    public Optional<TransferRecord> findByIdForUpdate(UUID id) {
+        String sql = "SELECT * FROM transfers WHERE id = :id FOR UPDATE";
+        List<TransferRecord> results = jdbcTemplate.query(sql, new MapSqlParameterSource("id", id), ROW_MAPPER);
+        return results.stream().findFirst();
+    }
+
+    @Override
+    public int updateStatus(
+            UUID id,
+            TransferStatus status,
+            String failureCode,
+            String failureMessage,
+            java.time.Instant completedAt,
+            java.time.Instant updatedAt
+    ) {
+        String sql = """
+                UPDATE transfers
+                SET status = :status,
+                    failure_code = :failureCode,
+                    failure_message = :failureMessage,
+                    completed_at = :completedAt,
+                    updated_at = :updatedAt
+                WHERE id = :id
+                """;
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("id", id)
+                .addValue("status", status.name())
+                .addValue("failureCode", failureCode)
+                .addValue("failureMessage", failureMessage)
+                .addValue("completedAt", completedAt != null ? Timestamp.from(completedAt) : null)
+                .addValue("updatedAt", Timestamp.from(updatedAt));
+
+        return jdbcTemplate.update(sql, params);
+    }
 }

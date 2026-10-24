@@ -17,7 +17,7 @@ class FlywayMigrationIntegrationTest extends BaseIntegrationTest {
                 "SELECT count(*) FROM \"flyway_schema_history\" WHERE \"success\" = true",
                 Integer.class
         );
-        assertThat(successfulMigrations).isNotNull().isGreaterThanOrEqualTo(1);
+        assertThat(successfulMigrations).isNotNull().isGreaterThanOrEqualTo(2);
 
         // 2. Verify all authoritative tables exist in public schema
         List<String> tableNames = jdbcTemplate.queryForList(
@@ -36,6 +36,16 @@ class FlywayMigrationIntegrationTest extends BaseIntegrationTest {
                 "processed_messages",
                 "reconciliation_runs",
                 "reconciliation_issues"
+        );
+
+        // 3. Verify PostgreSQL triggers exist
+        List<String> triggers = jdbcTemplate.queryForList(
+                "SELECT trigger_name FROM information_schema.triggers WHERE trigger_schema = 'public'",
+                String.class
+        );
+        assertThat(triggers).contains(
+                "trg_prevent_ledger_update_or_delete",
+                "trg_prevent_status_history_update_or_delete"
         );
     }
 }

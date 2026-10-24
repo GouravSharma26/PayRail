@@ -17,4 +17,8 @@ public interface AccountRepository {
     long count(String status, String currency);
 
     boolean existsById(UUID id);
+
+    Optional<AccountRecord> findByIdForUpdate(UUID id);
+
+    int updateBalance(UUID id, java.math.BigDecimal newBalance, java.time.Instant updatedAt);
 }

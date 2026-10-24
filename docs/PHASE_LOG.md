@@ -113,6 +113,52 @@
 - **Known limitations:** Transfers currently remain in `PENDING` status awaiting Phase 2 ledger-posting transaction implementation and Phase 3 broker integration.
 - **Reviewer notes / follow-up:** Phase 1 complete. Ready for Phase 1 review and gate approval.
 
+### 2026-10-24 — Phase 2: Ledger, Consistency, and Concurrency
+
+- **Commit:** pending commit
+- **Scope:** Implementation of immutable double-entry ledger, atomic transfer posting service, deterministic row locking for deadlock avoidance, balance projection maintenance, Flyway V2 immutability triggers, continuous reconciliation audit service, and high-concurrency race condition and deadlock elimination tests.
+- **Files changed:**
+  - `backend/src/main/resources/db/migration/V2__ledger_immutability_and_triggers.sql` (PostgreSQL triggers preventing UPDATE or DELETE on ledger_entries and transfer_status_history, plus composite index)
+  - `backend/src/main/java/com/payrail/account/repository/AccountRepository.java` & `JdbcAccountRepository.java` (Added `findByIdForUpdate` and `updateBalance`)
+  - `backend/src/main/java/com/payrail/transfer/repository/TransferRepository.java` & `JdbcTransferRepository.java` (Added `findByIdForUpdate` and `updateStatus`)
+  - `backend/src/main/java/com/payrail/transfer/controller/TransferController.java` (Added `POST /api/v1/transfers/{transferId}/process` endpoint for posting invocation)
+  - `backend/src/main/java/com/payrail/ledger/domain/LedgerLeg.java` & `LedgerEntryRecord.java` (Immutable double-entry ledger domain models)
+  - `backend/src/main/java/com/payrail/ledger/repository/LedgerRepository.java` & `JdbcLedgerRepository.java` (Append-only ledger persistence; strictly lacks update/delete methods)
+  - `backend/src/main/java/com/payrail/ledger/service/PostingFailureInjector.java` (Hook for testing atomic transaction rollbacks)
+  - `backend/src/main/java/com/payrail/ledger/service/TransferPostingResult.java` (Posting outcome representation)
+  - `backend/src/main/java/com/payrail/ledger/service/TransferPostingService.java` (Transactional posting engine with deterministic UUID locking)
+  - `backend/src/main/java/com/payrail/ledger/service/ReconciliationReport.java` & `ReconciliationService.java` (Continuous balance and ledger audit engine)
+  - `backend/src/main/java/com/payrail/ledger/dto/LedgerEntryResponse.java` (REST DTO for ledger inspection)
+  - `backend/src/main/java/com/payrail/ledger/controller/LedgerController.java` (REST endpoints for transfer and account ledger inspection)
+  - `backend/src/test/java/com/payrail/BaseIntegrationTest.java` (Updated `cleanDatabase` to use TRUNCATE CASCADE, avoiding row-level delete trigger conflicts)
+  - `backend/src/test/java/com/payrail/FlywayMigrationIntegrationTest.java` (Verified V1 and V2 migrations and PostgreSQL triggers)
+  - `backend/src/test/java/com/payrail/LedgerPostingIntegrationTest.java` (Integration tests for balanced posting, insufficient funds, inactive accounts, currency mismatch, atomic rollback, duplicate posting idempotence, and immutability triggers)
+  - `backend/src/test/java/com/payrail/LedgerConcurrencyIntegrationTest.java` (High-concurrency tests for competing overspend and bidirectional deadlock elimination)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (Checked off Phase 2 items)
+  - `docs/MODEL_AND_TECH_DECISIONS.md` (Recorded ADR-010 on deterministic locking and double-entry invariants)
+  - `docs/PHASE_LOG.md` (Recorded Phase 2 verification evidence)
+- **Design decision(s):**
+  - ADR-010: Transfers post atomically inside `@Transactional(isolation = Isolation.READ_COMMITTED)`. Row locks on accounts via `SELECT ... FOR UPDATE` are acquired in deterministic ascending UUID order (`firstLock = min(src, dst)`, `secondLock = max(src, dst)`), eliminating deadlock hazards under concurrent bidirectional transfers.
+  - Immutability enforced by PostgreSQL trigger `trg_prevent_ledger_update_or_delete` preventing `UPDATE` and `DELETE` on `ledger_entries`.
+  - Non-negative balances enforced by database check constraint `CHECK (current_balance >= 0)`.
+  - Reconciliation service verifies `current_balance == opening_balance - SUM(debits) + SUM(credits)` across all accounts.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 62 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 18.863s
+- **Test results:** unit `33 passed / 0 failed`; integration `29 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (62 total tests passing).
+- **Acceptance criteria verified:**
+  - All existing Phase 1 tests pass without regression.
+  - Every successfully posted transfer has exactly one balanced debit/credit pair.
+  - Failed postings (insufficient funds, inactive accounts, currency mismatch) leave no partial financial changes and zero ledger entries.
+  - Concurrent transfers cannot overspend the same account (10 parallel contender threads on 100.00 INR balance resulted in exactly 5 successes and 5 insufficient funds declines).
+  - Bidirectional concurrent transfers between accounts complete without deadlock.
+  - Duplicate posting attempts cannot create duplicate ledger entries.
+  - Account-balance consistency invariant is verified via reconciliation queries.
+  - Clean Maven build and package succeed.
+- **Not verified / blocked:** Asynchronous Kafka message publishing, outbox poller lease recovery, and consumer message deduplication (scheduled for Phase 3).
+- **Known limitations:** Outbox event records are persisted at transfer submission but background asynchronous polling and Kafka publishing will be wired in Phase 3.
+- **Reviewer notes / follow-up:** Phase 2 complete. Ready for Phase 2 review and gate approval.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name

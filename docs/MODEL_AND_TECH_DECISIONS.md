@@ -31,6 +31,15 @@ Record actual final choices and verification date during Phase 0. These are prop
 **Reason:** Running `.\mvnw.cmd -B verify` or `./mvnw -B verify` from the repository root builds and verifies the entire project. Keeping `backend/` isolated ensures clean separation between Java backend code, Flyway migrations, and the eventual React frontend without polluting the workspace root.
 **Consequence:** Commands can be run uniformly from the repo root. Root `docker-compose.yml` orchestrates backend dependencies (PostgreSQL and Kafka).
 
+## ADR-010 — Deterministic locking, transactional balance projections, and double-entry ledger invariants
+**Decision:**
+1. Transfers are posted atomically inside an explicit database transaction (`@Transactional(isolation = Isolation.READ_COMMITTED)`).
+2. To eliminate deadlock hazards under concurrent bidirectional transfers (e.g. A -> B and B -> A simultaneously), row locks on accounts via `SELECT ... FOR UPDATE` are strictly acquired in deterministic lexicographical order of account UUIDs (`firstLock = min(src, dst)`, `secondLock = max(src, dst)`).
+3. Stored `current_balance` on `accounts` is maintained as a transactionally updated projection guarded by a database check constraint (`current_balance >= 0`). Every successful transfer debits the sender, credits the recipient, inserts exactly one balanced DEBIT/CREDIT pair in `ledger_entries`, and transitions the transfer to `SUCCEEDED` atomically.
+4. If available balance is insufficient, the transfer transitions to `FAILED` with failure code `INSUFFICIENT_FUNDS`, recording a status transition history entry, while writing zero ledger entries and making zero balance modifications.
+5. Ledger rows are strictly immutable and append-only, enforced by database triggers preventing `UPDATE` and `DELETE` on `ledger_entries`.
+6. Account balances and ledger entries are continuously auditable via reconciliation queries verifying `current_balance = opening_balance - SUM(debits) + SUM(credits)`.
+
 ## Exact version record (verified 2026-10-24)
 
 | Component | Pinned version/tag | Compatibility verified against | Official source | Date |

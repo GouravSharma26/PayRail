@@ -107,4 +107,21 @@ public class JdbcAccountRepository implements AccountRepository {
         Boolean exists = jdbcTemplate.queryForObject(sql, new MapSqlParameterSource("id", id), Boolean.class);
         return Boolean.TRUE.equals(exists);
     }
+
+    @Override
+    public Optional<AccountRecord> findByIdForUpdate(UUID id) {
+        String sql = "SELECT * FROM accounts WHERE id = :id FOR UPDATE";
+        List<AccountRecord> results = jdbcTemplate.query(sql, new MapSqlParameterSource("id", id), ROW_MAPPER);
+        return results.stream().findFirst();
+    }
+
+    @Override
+    public int updateBalance(UUID id, java.math.BigDecimal newBalance, java.time.Instant updatedAt) {
+        String sql = "UPDATE accounts SET current_balance = :newBalance, updated_at = :updatedAt WHERE id = :id";
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("id", id)
+                .addValue("newBalance", newBalance)
+                .addValue("updatedAt", Timestamp.from(updatedAt));
+        return jdbcTemplate.update(sql, params);
+    }
 }

@@ -16,4 +16,15 @@ public interface TransferRepository {
     List<TransferRecord> search(TransferSearchCriteria criteria);
 
     long count(TransferSearchCriteria criteria);
+
+    Optional<TransferRecord> findByIdForUpdate(UUID id);
+
+    int updateStatus(
+            UUID id,
+            com.payrail.transfer.domain.TransferStatus status,
+            String failureCode,
+            String failureMessage,
+            java.time.Instant completedAt,
+            java.time.Instant updatedAt
+    );
 }

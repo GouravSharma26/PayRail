@@ -25,14 +25,14 @@ Use checkboxes only after verified implementation. Initially all implementation 
 
 ## Phase 2 — Ledger / consistency
 
-- [ ] Account row locks are obtained in deterministic order.
-- [ ] Double-entry pair + balances + successful status commit atomically.
-- [ ] Permanent business declines produce no ledger postings.
-- [ ] Unique constraints prevent duplicate ledger legs.
-- [ ] Ledger mutation APIs/repository methods are absent.
-- [ ] Insufficient-funds and concurrent spending tests pass on PostgreSQL.
-- [ ] Failure between posting steps leaves no partial effects.
-- [ ] Reconciliation checks exist and do not auto-repair.
+- [x] Account row locks are obtained in deterministic order.
+- [x] Double-entry pair + balances + successful status commit atomically.
+- [x] Permanent business declines produce no ledger postings.
+- [x] Unique constraints prevent duplicate ledger legs.
+- [x] Ledger mutation APIs/repository methods are absent.
+- [x] Insufficient-funds and concurrent spending tests pass on PostgreSQL.
+- [x] Failure between posting steps leaves no partial effects.
+- [x] Reconciliation checks exist and do not auto-repair.
 
 ## Phase 3 — Asynchronous processing
 

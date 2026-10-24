@@ -33,16 +33,20 @@ public abstract class BaseIntegrationTest {
 
     @BeforeEach
     void cleanDatabase() {
-        // Clear mutable tables between tests in clean dependency order
-        jdbcTemplate.execute("DELETE FROM idempotency_records");
-        jdbcTemplate.execute("DELETE FROM transfer_status_history");
-        jdbcTemplate.execute("DELETE FROM processing_attempts");
-        jdbcTemplate.execute("DELETE FROM ledger_entries");
-        jdbcTemplate.execute("DELETE FROM outbox_events");
-        jdbcTemplate.execute("DELETE FROM processed_messages");
-        jdbcTemplate.execute("DELETE FROM reconciliation_issues");
-        jdbcTemplate.execute("DELETE FROM reconciliation_runs");
-        jdbcTemplate.execute("DELETE FROM transfers");
-        jdbcTemplate.execute("DELETE FROM accounts");
+        // Reset all tables between tests without firing row-level application delete triggers
+        jdbcTemplate.execute("""
+                TRUNCATE TABLE
+                    idempotency_records,
+                    transfer_status_history,
+                    processing_attempts,
+                    ledger_entries,
+                    outbox_events,
+                    processed_messages,
+                    reconciliation_issues,
+                    reconciliation_runs,
+                    transfers,
+                    accounts
+                CASCADE
+                """);
     }
 }
