@@ -8,6 +8,7 @@ import com.payrail.outbox.repository.OutboxRepository;
 import com.payrail.transfer.domain.TransferRecord;
 import com.payrail.transfer.domain.TransferStatus;
 import com.payrail.transfer.domain.TransferStatusHistoryRecord;
+import com.payrail.transfer.repository.ProcessingAttemptRepository;
 import com.payrail.transfer.repository.TransferRepository;
 import com.payrail.transfer.repository.TransferStatusHistoryRepository;
 import org.slf4j.Logger;
@@ -33,6 +34,7 @@ public class ProcessingRecoveryService {
     private final TransferRepository transferRepository;
     private final OutboxRepository outboxRepository;
     private final TransferStatusHistoryRepository statusHistoryRepository;
+    private final ProcessingAttemptRepository processingAttemptRepository;
     private final DeadLetterPublisher deadLetterPublisher;
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
@@ -53,6 +55,7 @@ public class ProcessingRecoveryService {
             TransferRepository transferRepository,
             OutboxRepository outboxRepository,
             TransferStatusHistoryRepository statusHistoryRepository,
+            ProcessingAttemptRepository processingAttemptRepository,
             DeadLetterPublisher deadLetterPublisher,
             PlatformTransactionManager transactionManager,
             ObjectMapper objectMapper
@@ -60,6 +63,7 @@ public class ProcessingRecoveryService {
         this.transferRepository = transferRepository;
         this.outboxRepository = outboxRepository;
         this.statusHistoryRepository = statusHistoryRepository;
+        this.processingAttemptRepository = processingAttemptRepository;
         this.deadLetterPublisher = deadLetterPublisher;
         this.transactionTemplate = new TransactionTemplate(transactionManager);
         this.objectMapper = objectMapper;
@@ -141,6 +145,18 @@ public class ProcessingRecoveryService {
                     now
             ));
 
+            if (transfer.processingClaimToken() != null && transfer.processingAttemptCount() > 0) {
+                processingAttemptRepository.finalizeStaleAttempt(
+                        transferId,
+                        transfer.processingAttemptCount(),
+                        transfer.processingClaimToken(),
+                        "EXHAUSTED",
+                        "LEASE_EXPIRED_EXHAUSTED",
+                        "Processing lease expired after reaching max attempts (" + maxAttempts + ")",
+                        now
+                );
+            }
+
             deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
                     transferCommandsTopic,
                     null,
@@ -169,6 +185,18 @@ public class ProcessingRecoveryService {
                     transfer.correlationId(),
                     now
             ));
+
+            if (transfer.processingClaimToken() != null && transfer.processingAttemptCount() > 0) {
+                processingAttemptRepository.finalizeStaleAttempt(
+                        transferId,
+                        transfer.processingAttemptCount(),
+                        transfer.processingClaimToken(),
+                        "RETRY_SCHEDULED",
+                        "STALE_LEASE_RECOVERED",
+                        "Stale processing lease recovered and retry scheduled",
+                        now
+                );
+            }
 
             String retryPayload;
             try {

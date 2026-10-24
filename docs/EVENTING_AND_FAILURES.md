@@ -37,10 +37,10 @@ A separate event topic for reporting is optional and out of MVP. Topic partition
 
 1. Query due unpublished rows, using a short claim transaction and `FOR UPDATE SKIP LOCKED` or a robust lease protocol (`AND (last_error_code IS NULL OR last_error_code <> 'PUBLISH_RETRY_EXHAUSTED')`).
 2. Assign a lease token and expiry, increment publish attempt count, commit.
-3. Publish with broker acknowledgement, a stable event ID, and transfer ID key. For DLQ events (`transfer.dlq`), publish directly to `payrail.transfer-commands.dlq.v1`.
+3. Publish with broker acknowledgement, a stable event ID, and transfer ID key. For DLQ events (`transfer.dlq`), events are recorded with an independent aggregate identity (`aggregate_type = 'dlq'`, `aggregate_id = eventId`, `aggregate_sequence = 1L`) to prevent concurrent sequence collisions under `MAX(seq) + 1`, and published to `payrail.transfer-commands.dlq.v1` using `correlation_id` as the message key.
 4. After broker acknowledgement, mark `published_at` only if lease token still matches.
 5. On publish failure, save a safe error code/message (`BROKER_PUBLISH_FAILED`), clear/expire lease, and schedule next retry with bounded exponential backoff + jitter.
-6. Enforce bounded publish retries: when `publish_attempts >= maxRetries` (default 5), persist inspectable terminal failure `PUBLISH_RETRY_EXHAUSTED`. Exclude exhausted events from automatic retry sweeps while keeping them visible to reconciliation audits (`OUTBOX_PUBLISH_EXHAUSTED`) and the operator replay mechanism (`outboxRepository.resetForReplay`).
+6. Enforce bounded publish retries: when `publish_attempts >= maxRetries` (default 5), persist inspectable terminal failure `PUBLISH_RETRY_EXHAUSTED`. Exhausted events are excluded from automatic publisher sweeps, but explicitly prevent the pending recovery sweep from generating duplicate command events, preserving operator visibility and auditability. Operator recovery is supported via `outboxRepository.resetForReplay(eventId, now)`.
 7. If the process crashes after broker ack and before database mark, it halts ungracefully: the lease remains intact in PostgreSQL until expiry, and upon lease recovery the event is republished. Consumer dedupe and transfer-state checks absorb this duplicate delivery.
 
 Do not hold a database transaction or row lock open while waiting for the broker. Publishers running on multiple app instances must not claim the same row concurrently except through lease expiry/crash behavior.
@@ -55,7 +55,7 @@ Do not hold a database transaction or row lock open while waiting for the broker
 - In the posting transaction, lock transfer and accounts; check claim token; validate; update balances; insert ledger legs; update status/history/attempt outcome; add processed message. Commit all writes atomically.
 - On permanent business decline, lock transfer, verify claim token, and commit terminal `FAILED` status with safe error code and 0 ledger entries.
 - On retryable technical failure, pass `claimToken` into failure recovery transaction: lock transfer row `FOR UPDATE`, verify `status == PROCESSING` and claim token still matches. If stale or claim replaced, exit without mutating state. If valid, increment attempt outcome, reset to `PENDING` (or mark `FAILED` with `RETRY_EXHAUSTED` and enqueue DLQ outbox event if attempts exhausted), and schedule next retry via non-colliding outbox aggregate sequence (`MAX(seq) + 1`).
-- Unhandled consumer exceptions (such as database failure before a durable claim or within the retry-state transaction) are re-thrown and propagated to Spring Kafka's `CommonErrorHandler` (`DefaultErrorHandler` with bounded backoff) rather than silently acknowledging uncommitted events.
+- Unhandled consumer exceptions (such as database failure during DLQ recording, before a durable claim, or within the retry-state transaction) are re-thrown and propagated to Spring Kafka's `CommonErrorHandler`. The configured `DefaultErrorHandler` utilizes `DurableRecoveryEnforcingRecordRecoverer` with a bounded 250ms backoff, refusing to commit or skip offsets on retry exhaustion (`commitRecovered = false`, `resetStateOnRecoveryFailure = true`). Records are preserved until PostgreSQL recovers and processing/DLQ recording is durable.
 
 ## 6. Idempotency layers (not interchangeable)
 
@@ -72,16 +72,16 @@ Keep configuration externalized, with conservative defaults, such as `max-attemp
 
 - Retry only transient technical failures.
 - Do not retry permanent business declines such as insufficient funds.
-- Durable DLQ delivery: Dead-letter work (malformed payload, invalid schema, missing transfer, or retry exhaustion) is recorded in `outbox_events` within the active DB transaction and published asynchronously by the leased outbox publisher with broker ack and retry tracking. Swallowed broker errors during DLQ delivery are eliminated.
+- Durable DLQ delivery: Dead-letter work (malformed payload, invalid schema, missing transfer, or retry exhaustion) is recorded in `outbox_events` with independent aggregate identity (`aggregate_type = 'dlq'`, `aggregate_id = eventId`, `aggregate_sequence = 1L`) within the active DB transaction and published asynchronously by the leased outbox publisher with broker ack and retry tracking. Swallowed broker errors during DLQ delivery are eliminated.
 - On exhaustion, transfer status is marked terminal `FAILED` (`RETRY_EXHAUSTED`), attempt outcome recorded, DLQ outbox event enqueued, and reconciliation issue flagged.
 - Controlled operator replay workflow: operator can inspect exhausted outbox events, fix underlying infrastructure issues, and invoke `resetForReplay(eventId, now)` to safely re-queue the event.
 
 ## 8. Recovery sweep
 
 A scheduled recovery sweep detects and safely acts on:
-- Processing lease expired beyond a grace period: resets to `PENDING` and enqueues recovery outbox event seq = `MAX(seq) + 1` (or marks `FAILED` with DLQ if attempts exhausted).
+- Processing lease expired beyond a grace period: In the same transaction as the transfer reset, finalizes the affected stale attempt record fenced by `(transfer_id = :transferId AND attempt_number = :attemptNumber AND claim_token = :claimToken AND outcome = 'IN_PROGRESS')`. If below attempt limit, sets attempt outcome to `RETRY_SCHEDULED`, resets transfer to `PENDING`, and enqueues recovery command event. If at attempt limit, sets attempt outcome to `EXHAUSTED` (`LEASE_EXPIRED`), transitions transfer to `FAILED`, and enqueues DLQ record.
 - Unpublished outbox event with expired lease: releases stale publisher lease.
-- Stale `PENDING` transfers: locks candidate transfer `FOR UPDATE`, verifies `status == PENDING` and `hasUnpublishedEvents == false`, allocates aggregate sequence using `MAX(seq) + 1`, and enqueues recovery event. Safe across concurrent sweepers and worker claim races. An individual recovery candidate conflict does not abort the sweep for other transfers.
+- Stale `PENDING` transfers: locks candidate transfer `FOR UPDATE`, verifies `status == PENDING` and that no unpublished or exhausted outbox events exist (`hasUnpublishedEvents == false`). A transfer with a `PUBLISH_RETRY_EXHAUSTED` event does not acquire endless replacement command events; recovery requires explicit operator replay. Unrelated candidates recover independently even if one encounters a conflict.
 - Technical retry exhaustion and outbox publish exhaustion (`PUBLISH_RETRY_EXHAUSTED`) are flagged in continuous reconciliation.
 
 ## 9. Reconciliation checks
@@ -113,6 +113,11 @@ Document and test these cases:
 | Stale PENDING transfer recovery | Allocates sequence `MAX(seq) + 1` (no collision with published seq 1); concurrent sweepers and worker claim races handled safely |
 | Stale worker resumes failure handling after SUCCEEDED or FAILED | Claim fencing checks `claimToken` and `PROCESSING` status; exits without overwriting state, ledger entries, or enqueuing duplicate retries |
 | Database failure before durable claim or in retry-state tx | Exception propagated to Spring Kafka `CommonErrorHandler` with bounded backoff; source event not silently acknowledged |
+| Database failure during malformed message DLQ recording | Listener container retries with bounded backoff; refuses offset commit on exhaustion; message redelivered and recovered when DB restored |
+| Concurrent DLQ events for same transfer | Independent aggregate identity (`aggregate_type = 'dlq'`, `aggregate_id = eventId`) guarantees zero sequence collisions |
+| Stale processing lease below retry cap | Finalizes stale attempt as `RETRY_SCHEDULED`, resets transfer to `PENDING`, enqueues recovery command |
+| Stale processing lease at retry cap | Finalizes stale attempt as `EXHAUSTED` (`LEASE_EXPIRED`), transitions transfer to `FAILED`, enqueues DLQ event |
+| Stale PENDING transfer with exhausted outbox event | Ignored by automatic recovery sweep; no duplicate commands generated; resumes upon operator replay |
 | Client timeout after API commit | Same idempotency key returns the same transfer |
 | Duplicate message delivered twice | One logical transfer result and one ledger pair at most |
 | App crashes after claim before processing | Expired lease recovery schedules work with non-colliding aggregate sequence |

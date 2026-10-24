@@ -111,4 +111,39 @@ public class JdbcProcessingAttemptRepository implements ProcessingAttemptReposit
 
         jdbcTemplate.update(sql, params);
     }
+
+    @Override
+    public boolean finalizeStaleAttempt(
+            UUID transferId,
+            int attemptNumber,
+            UUID claimToken,
+            String outcome,
+            String errorCode,
+            String safeErrorMessage,
+            Instant finishedAt
+    ) {
+        String sql = """
+                UPDATE processing_attempts
+                SET outcome = :outcome,
+                    error_code = :errorCode,
+                    safe_error_message = :safeErrorMessage,
+                    finished_at = :finishedAt,
+                    duration_ms = GREATEST(0, CAST(EXTRACT(EPOCH FROM (:finishedAt - started_at)) * 1000 AS BIGINT))
+                WHERE transfer_id = :transferId
+                  AND attempt_number = :attemptNumber
+                  AND claim_token = :claimToken
+                  AND outcome = 'IN_PROGRESS'
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("outcome", outcome)
+                .addValue("errorCode", errorCode)
+                .addValue("safeErrorMessage", safeErrorMessage != null && safeErrorMessage.length() > 300 ? safeErrorMessage.substring(0, 300) : safeErrorMessage)
+                .addValue("finishedAt", Timestamp.from(finishedAt))
+                .addValue("transferId", transferId)
+                .addValue("attemptNumber", attemptNumber)
+                .addValue("claimToken", claimToken);
+
+        return jdbcTemplate.update(sql, params) > 0;
+    }
 }

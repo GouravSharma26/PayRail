@@ -119,6 +119,9 @@ class TransferCommandConsumerErrorPropagationIntegrationTest extends BaseIntegra
         // Inject simulated database connection failure before claim
         asyncTransferProcessor.setFailureInjector(new AsyncProcessingFailureInjector() {
             @Override
+            public void beforePostingCommit(TransferRecord transfer, int attemptNumber) {}
+
+            @Override
             public void beforeClaim(UUID id) {
                 if (transferId.equals(id)) {
                     throw new DataAccessResourceFailureException("Simulated database failure before durable claim");

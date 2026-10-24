@@ -311,7 +311,6 @@ public class JdbcOutboxRepository implements OutboxRepository {
                 WHERE aggregate_type = :aggregateType
                   AND aggregate_id = :aggregateId
                   AND published_at IS NULL
-                  AND (last_error_code IS NULL OR last_error_code <> 'PUBLISH_RETRY_EXHAUSTED')
                 """;
 
         MapSqlParameterSource params = new MapSqlParameterSource()

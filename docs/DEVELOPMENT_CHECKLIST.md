@@ -41,13 +41,14 @@ Use checkboxes only after verified implementation. Initially all implementation 
 - [x] Event envelope is versioned and uses transfer ID key.
 - [x] Consumer dedupe and terminal state guard are implemented.
 - [x] Retry scheduling and original-event dedupe are atomic.
-- [x] DLQ delivery is durable: recorded in outbox within same DB transaction as failure/exhaustion and published asynchronously without swallowed errors.
+- [x] DLQ delivery is durable: recorded in outbox with independent aggregate identity (`aggregate_type = 'dlq'`, `aggregate_id = eventId`) to eliminate concurrent sequence collisions, and published asynchronously without swallowed errors.
 - [x] Outbox retries are bounded: exhausted events marked `PUBLISH_RETRY_EXHAUSTED`, excluded from auto-claims, visible to reconciliation and operator replay.
-- [x] Stale pending recovery is transactional, idempotent, and allocates non-colliding sequences (`MAX(seq) + 1`); concurrent sweepers and worker claim races safe.
+- [x] Stale pending recovery is transactional, idempotent, allocates non-colliding sequences (`MAX(seq) + 1`), and ignores transfers with exhausted outbox events (no duplicate command storms).
 - [x] Worker failure handling (`handleTechnicalFailure`/`handleBusinessDecline`) is claim-fenced (`claimToken` and `status == PROCESSING` verified under row lock).
-- [x] Consumer unhandled failures propagate to Spring Kafka container error handler rather than silently returning.
+- [x] Expired worker leases finalize stale attempt records (`RETRY_SCHEDULED` or `EXHAUSTED`) fenced by claim token and transfer ID.
+- [x] Explicit container-level error policy (`DurableRecoveryEnforcingRecordRecoverer`): messages preserved uncommitted on DB outage/exhaustion and redelivered cleanly upon recovery.
 - [x] Expired lease/outbox recovery is idempotent and multi-instance safe.
-- [x] Broker and DB outage/duplicate/crash tests pass (116 tests passing).
+- [x] Broker and DB outage/duplicate/crash/deadlock/concurrency tests pass (123 tests passing).
 - [x] Delivery semantics are accurately described as at-least-once + idempotent effects.
 
 ## Phase 4 — Operations and CI

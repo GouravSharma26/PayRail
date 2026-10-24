@@ -24,4 +24,14 @@ public interface ProcessingAttemptRepository {
             Instant finishedAt,
             Long durationMs
     );
+
+    boolean finalizeStaleAttempt(
+            UUID transferId,
+            int attemptNumber,
+            UUID claimToken,
+            String outcome,
+            String errorCode,
+            String safeErrorMessage,
+            Instant finishedAt
+    );
 }

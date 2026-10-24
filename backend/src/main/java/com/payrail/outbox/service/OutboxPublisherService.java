@@ -111,7 +111,9 @@ public class OutboxPublisherService {
     }
 
     private boolean publishSingleEvent(OutboxEventRecord event, UUID leaseToken) {
-        String eventKey = event.aggregateId() != null ? event.aggregateId().toString() : event.eventId().toString();
+        String eventKey = (isDlqEvent(event.eventType()) && event.correlationId() != null)
+                ? event.correlationId().toString()
+                : (event.aggregateId() != null ? event.aggregateId().toString() : event.eventId().toString());
         try {
             // Test fault-injection point: simulate broker send failure
             crashInjector.beforeBrokerSend(event);

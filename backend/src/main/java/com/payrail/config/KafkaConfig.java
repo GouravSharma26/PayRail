@@ -33,8 +33,13 @@ public class KafkaConfig {
 
     @Bean
     public org.springframework.kafka.listener.CommonErrorHandler kafkaListenerErrorHandler() {
-        return new org.springframework.kafka.listener.DefaultErrorHandler(
-                new org.springframework.util.backoff.FixedBackOff(250L, 2L)
-        );
+        org.springframework.kafka.listener.DefaultErrorHandler errorHandler =
+                new org.springframework.kafka.listener.DefaultErrorHandler(
+                        new com.payrail.consumer.service.DurableRecoveryEnforcingRecordRecoverer(250L),
+                        new org.springframework.util.backoff.FixedBackOff(250L, 2L)
+                );
+        errorHandler.setResetStateOnRecoveryFailure(true);
+        errorHandler.setCommitRecovered(false);
+        return errorHandler;
     }
 }

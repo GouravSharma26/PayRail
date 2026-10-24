@@ -24,22 +24,33 @@ public class DeadLetterPublisher {
         this.objectMapper = objectMapper;
     }
 
+    private volatile DeadLetterFailureInjector failureInjector;
+
+    public void setFailureInjector(DeadLetterFailureInjector failureInjector) {
+        this.failureInjector = failureInjector;
+    }
+
     /**
      * Durably records a dead-letter event into the outbox within the caller's active database transaction.
+     * Uses an independent aggregate identity for each DLQ event to ensure concurrency safety and prevent
+     * aggregate sequence collisions, while preserving transfer and event IDs in the payload and correlationId.
      * The leased outbox publisher will publish it asynchronously to payrail.transfer-commands.dlq.v1
      * outside any DB transaction, with broker acknowledgment and retry tracking.
      */
     public UUID recordDeadLetter(DeadLetterEnvelope dlqMessage) {
+        if (failureInjector != null) {
+            failureInjector.beforeRecordDeadLetter(dlqMessage);
+        }
         try {
-            String aggregateType = dlqMessage.transferId() != null ? "transfer" : "dlq";
-            UUID aggregateId = dlqMessage.transferId() != null
-                    ? dlqMessage.transferId()
-                    : (dlqMessage.originalEventId() != null ? dlqMessage.originalEventId() : UUID.randomUUID());
-
-            long aggregateSequence = outboxRepository.getNextAggregateSequence(aggregateType, aggregateId);
-            String payloadJson = objectMapper.writeValueAsString(dlqMessage);
             UUID eventId = UUID.randomUUID();
-            UUID correlationId = dlqMessage.originalEventId() != null ? dlqMessage.originalEventId() : aggregateId;
+            String aggregateType = "dlq";
+            UUID aggregateId = eventId;
+            long aggregateSequence = 1L;
+
+            String payloadJson = objectMapper.writeValueAsString(dlqMessage);
+            UUID correlationId = dlqMessage.transferId() != null
+                    ? dlqMessage.transferId()
+                    : (dlqMessage.originalEventId() != null ? dlqMessage.originalEventId() : eventId);
             Instant now = dlqMessage.failedAt() != null ? dlqMessage.failedAt() : Instant.now();
 
             OutboxEventRecord dlqOutboxEvent = new OutboxEventRecord(
@@ -62,8 +73,8 @@ public class DeadLetterPublisher {
             );
 
             outboxRepository.insert(dlqOutboxEvent);
-            log.warn("Recorded durable DLQ outbox event id={} for aggregateId={} failureCode={}",
-                    eventId, aggregateId, dlqMessage.failureCode());
+            log.warn("Recorded durable DLQ outbox event id={} for transferId={} failureCode={}",
+                    eventId, dlqMessage.transferId(), dlqMessage.failureCode());
             return eventId;
         } catch (Exception e) {
             log.error("Failed to record durable dead-letter outbox event: {}", e.getMessage(), e);

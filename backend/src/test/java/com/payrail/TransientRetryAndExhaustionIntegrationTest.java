@@ -338,7 +338,7 @@ class TransientRetryAndExhaustionIntegrationTest extends BaseIntegrationTest {
 
         List<OutboxEventRecord> unpublished = outboxRepository.findUnpublished(Instant.now().plusSeconds(60));
         OutboxEventRecord dlqEvent = unpublished.stream()
-                .filter(e -> "transfer.dlq".equals(e.eventType()) && transferId.equals(e.aggregateId()))
+                .filter(e -> "transfer.dlq".equals(e.eventType()) && (transferId.equals(e.aggregateId()) || transferId.equals(e.correlationId())))
                 .findFirst()
                 .orElseThrow();
         assertThat(dlqEvent.publishedAt()).isNull();

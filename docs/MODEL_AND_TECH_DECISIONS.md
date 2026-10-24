@@ -150,6 +150,33 @@ Independent review of commit `e5c6460` identified five reliability and concurren
    - Unhandled processing exceptions in `TransferCommandConsumer.onMessage` are re-thrown (`throw e;`) to the Spring Kafka listener container.
    - Configured `CommonErrorHandler` (`DefaultErrorHandler` with `FixedBackOff(250L, 2L)`) handles transient retries; source records are never silently acknowledged when durable claim or retry-state commits fail.
 
+## ADR-015 — Phase 3 Second Review Remediation: Explicit Container-Level Error Policy, Non-Bypass of Exhausted Events, Attempt Finalization on Lease Recovery, and Independent DLQ Aggregate Sequencing
+**Context:**
+A second independent review of Phase 3 (commit `0893ec7` / reported HEAD `83f85ce`) identified four edge-case gaps in the failure handling and concurrency model:
+1. *Kafka Container-Level Error Policy:* Spring Kafka's default recoverer could log and skip/commit an exhausted consumer record rather than preserving the offset until a durable outcome exists in PostgreSQL.
+2. *Exhausted Outbox Bypass:* `JdbcTransferRepository.findPendingWithoutOutbox()` ignored outbox events in `PUBLISH_RETRY_EXHAUSTED` state, causing the background pending recovery sweep to regenerate endless new transfer commands for an already-exhausted transfer.
+3. *Unfinished Processing Attempts:* When recovering expired worker leases, the `processing_attempts` row was left indefinitely `IN_PROGRESS` rather than being finalized with a definitive outcome.
+4. *DLQ Sequence Collisions:* `DeadLetterPublisher` shared the `"transfer"` aggregate identity and sequence calculation (`MAX(seq) + 1`), which is not an atomic sequence allocator and collided on concurrent DLQ emissions for the same transfer.
+
+**Decisions:**
+1. **Explicit Container Error Policy (`DurableRecoveryEnforcingRecordRecoverer`):**
+   - Configured `DefaultErrorHandler` with custom `DurableRecoveryEnforcingRecordRecoverer(250L)`, `setResetStateOnRecoveryFailure(true)`, and `setCommitRecovered(false)`.
+   - If durable recovery fails during container retries (e.g. PostgreSQL outage during DLQ recording or claim persistence), retry exhaustion invokes the recoverer, logs a bounded warning, enforces a 250ms backoff, and throws `DurableRecoveryUnavailableException`.
+   - Offsets are never acknowledged or skipped without durable persistence; once PostgreSQL recovers, the Kafka listener redelivers the message cleanly.
+2. **Exhausted Outbox Events Guard Against Automatic Sweep Regeneration:**
+   - Removed `AND (o.last_error_code IS NULL OR o.last_error_code <> 'PUBLISH_RETRY_EXHAUSTED')` from `findPendingWithoutOutbox` and `hasUnpublishedEvents`.
+   - A transfer whose outbox event reached `PUBLISH_RETRY_EXHAUSTED` is preserved in an operator-visible, audit-visible state and will not acquire endless replacement command events across repeated sweeps.
+   - Operator replay via `outboxRepository.resetForReplay(eventId, now)` remains available to safely resume publication once root causes are resolved. Unrelated pending transfers continue to sweep safely.
+3. **Fenced Finalization of Processing Attempts on Stale Leases:**
+   - In `ProcessingRecoveryService.recoverStaleTransfer()`, the stale attempt record is finalized in the same transaction as the transfer state change:
+     - If below retry limit: attempt is updated to `RETRY_SCHEDULED`, transfer returns to `PENDING`.
+     - If retry limit reached: attempt is updated to `EXHAUSTED` (`LEASE_EXPIRED`), transfer transitions to terminal `FAILED`.
+   - Fenced specifically by `(transfer_id = :transferId AND attempt_number = :attemptNumber AND claim_token = :claimToken AND outcome = 'IN_PROGRESS')` so newer workers are never overwritten.
+4. **Independent Aggregate Identity for DLQ Records:**
+   - `DeadLetterPublisher` inserts DLQ outbox events with an independent aggregate identity (`aggregate_type = 'dlq'`, `aggregate_id = eventId`, `aggregate_sequence = 1L`).
+   - The associated `transferId` is preserved in `correlation_id` (used as Kafka partition key for ordered routing) and within the `DeadLetterEnvelope` payload.
+   - Eliminates all sequence concurrency collisions across parallel DLQ emissions for the same transfer while preserving full aggregate uniqueness in PostgreSQL.
+
 ## Exact version record (verified 2026-10-24)
 
 | Component | Pinned version/tag | Compatibility verified against | Official source | Date |

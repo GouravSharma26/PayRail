@@ -90,14 +90,22 @@ class MalformedEventDlqIntegrationTest extends BaseIntegrationTest {
         assertThat(published).isGreaterThanOrEqualTo(1);
 
         // Verify DLQ received the malformed message
-        ConsumerRecords<String, String> dlqRecords = dlqConsumer.poll(Duration.ofSeconds(10));
-        assertThat(dlqRecords.isEmpty()).isFalse();
+        DeadLetterEnvelope matchedEnvelope = null;
+        long deadline = System.currentTimeMillis() + 10000;
+        while (System.currentTimeMillis() < deadline && matchedEnvelope == null) {
+            ConsumerRecords<String, String> dlqRecords = dlqConsumer.poll(Duration.ofMillis(500));
+            for (ConsumerRecord<String, String> r : dlqRecords) {
+                DeadLetterEnvelope env = objectMapper.readValue(r.value(), DeadLetterEnvelope.class);
+                if (invalidJson.equals(env.rawPayload())) {
+                    matchedEnvelope = env;
+                    break;
+                }
+            }
+        }
 
-        ConsumerRecord<String, String> dlqRecord = dlqRecords.iterator().next();
-        DeadLetterEnvelope dlqEnvelope = objectMapper.readValue(dlqRecord.value(), DeadLetterEnvelope.class);
-
-        assertThat(dlqEnvelope.failureCode()).isEqualTo("MALFORMED_EVENT");
-        assertThat(dlqEnvelope.rawPayload()).isEqualTo(invalidJson);
+        assertThat(matchedEnvelope).isNotNull();
+        assertThat(matchedEnvelope.failureCode()).isEqualTo("MALFORMED_EVENT");
+        assertThat(matchedEnvelope.rawPayload()).isEqualTo(invalidJson);
     }
 
     @Test
