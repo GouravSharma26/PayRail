@@ -2,7 +2,7 @@ spring:
   application:
     name: payrail-simulator
   profiles:
-    active: ${SPRING_PROFILES_ACTIVE:dev}
+    active: ${SPRING_PROFILES_ACTIVE:}
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:5432}/${DB_NAME:payrail_db}}
     username: ${SPRING_DATASOURCE_USERNAME:payrail_user}

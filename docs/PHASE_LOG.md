@@ -198,6 +198,38 @@
 - **Known limitations:** As planned, asynchronous Kafka consumer claiming is deferred to Phase 3.
 - **Reviewer notes / follow-up:** Phase 2 remediation complete. Waiting at Phase 2 gate for second review approval.
 
+### 2026-10-24 — Phase 2: Final Technical Review Remediation
+
+- **Commit:** `09595f8`
+- **Scope:** Address remaining Phase 2 review blockers: remove implicit dev profile default for safe default runtime, enforce commit-time currency matching and account balance projection invariants via PostgreSQL deferred triggers, restore historical V2 migration and add V4 (SQLSTATE 23514) and V5 (account projection and currency invariants) migrations, verify upgrade path with validate-on-migrate.
+- **Files changed:**
+  - `backend/src/main/resources/application.yml` (removed implicit dev profile default: `active: ${SPRING_PROFILES_ACTIVE:}`)
+  - `backend/src/main/resources/db/migration/V2__ledger_immutability_and_triggers.sql` (restored exact original migration from commit 4c0015a)
+  - `backend/src/main/resources/db/migration/V4__correct_immutability_trigger_sqlstate.sql` (new migration upgrading immutability triggers to SQLSTATE 23514 check_violation)
+  - `backend/src/main/resources/db/migration/V5__enforce_account_balance_and_currency_invariants.sql` (new migration adding deferred constraint triggers trg_account_balance_invariants_accounts and trg_account_balance_invariants_ledger and enforcing transfer currency matching accounts at commit time)
+  - `backend/src/test/java/com/payrail/BaseIntegrationTest.java` (centralized withTriggersDisabled helper)
+  - `backend/src/test/java/com/payrail/DefaultRuntimeIntegrationTest.java` (verified unset profile does not register DevDataSeeder and returns 404 for dev processing endpoint)
+  - `backend/src/test/java/com/payrail/FlywayMigrationIntegrationTest.java` (verified fresh V1-V5 migration and upgrade path from original V2 history with validate-on-migrate)
+  - `backend/src/test/java/com/payrail/PostgresLedgerInvariantTriggerIntegrationTest.java` (updated raw-SQL atomic posting test to balance accounts; added negative tests for currency mismatch against accounts, unchanged account balances with ledger entries, and independent balance tampering)
+  - `backend/src/test/java/com/payrail/LedgerPostingIntegrationTest.java` (wrapped currency mismatch decline test setup with triggers disabled to test posting service defensive failure path)
+  - `backend/src/test/java/com/payrail/ReconciliationIntegrationTest.java` (cleaned up withTriggersDisabled usage)
+  - `docs/DOMAIN_MODEL.md` (documented PostgreSQL engine-level deferred constraint trigger enforcement of invariants 3, 6, 7, 8, 9, 10)
+  - `docs/MODEL_AND_TECH_DECISIONS.md` (updated ADR-011 with V4/V5 migrations, safe default profile, and account balance projection triggers)
+  - `docs/PHASE_LOG.md` (recorded final Phase 2 remediation evidence)
+- **Design decision(s):**
+  - ADR-011: Safe default runtime ensures neither test accounts nor manual processing endpoints are exposed in unprofiled environments. Flyway V2 is restored and immutable; V4 updates trigger SQLSTATE to 23514; V5 adds commit-time account balance projection checks (`current_balance = opening_balance + sum(credits) - sum(debits)`) and transfer currency matching.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 83 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 20.194s, 83 tests run, 0 failures, 0 errors, 0 skipped; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+- **Test results:** unit `33 passed / 0 failed`; integration `50 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (83 total tests passing).
+- **Acceptance criteria verified:**
+  - Finding 1: Default runtime without SPRING_PROFILES_ACTIVE does not register DevDataSeeder and returns 404 for dev processing endpoint.
+  - Finding 2: Direct-SQL tests prove database rejects transfers with currency mismatch against accounts, rejects SUCCEEDED transfers with unchanged account balances, rejects independent balance modifications without ledger entries, and allows legitimate balanced atomic transfers.
+  - Finding 3: Flyway migration history preserved; fresh database migrates V1-V5 cleanly; database with original V2 history upgrades cleanly without checksum mismatch under validate-on-migrate.
+- **Not verified / blocked:** Phase 3 Kafka outbox publishing, event consumers, DLQ, and lease recovery (intentionally deferred to Phase 3).
+- **Known limitations:** None for Phase 2.
+- **Reviewer notes / follow-up:** Phase 2 final review remediation complete. All gate criteria verified. Waiting at Phase 2 gate for approval.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name

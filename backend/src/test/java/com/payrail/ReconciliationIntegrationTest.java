@@ -60,7 +60,9 @@ class ReconciliationIntegrationTest extends BaseIntegrationTest {
         createAccount(srcId, "Corrupted Account", "INR", "1000.00");
 
         // Corrupt current_balance directly in database without ledger movement
-        jdbcTemplate.update("UPDATE accounts SET current_balance = 1250.00 WHERE id = ?", srcId);
+        withTriggersDisabled(() -> {
+            jdbcTemplate.update("UPDATE accounts SET current_balance = 1250.00 WHERE id = ?", srcId);
+        });
 
         ReconciliationReport report = reconciliationService.runFullAudit();
 
@@ -193,17 +195,6 @@ class ReconciliationIntegrationTest extends BaseIntegrationTest {
         assertThat(report.isBalanced()).isFalse();
         assertThat(report.discrepancyDetails())
                 .anyMatch(d -> d.contains("currency mismatch"));
-    }
-
-    private void withTriggersDisabled(Runnable action) {
-        jdbcTemplate.execute("ALTER TABLE transfers DISABLE TRIGGER trg_transfer_ledger_invariants_transfers");
-        jdbcTemplate.execute("ALTER TABLE ledger_entries DISABLE TRIGGER trg_transfer_ledger_invariants_ledger");
-        try {
-            action.run();
-        } finally {
-            jdbcTemplate.execute("ALTER TABLE transfers ENABLE TRIGGER trg_transfer_ledger_invariants_transfers");
-            jdbcTemplate.execute("ALTER TABLE ledger_entries ENABLE TRIGGER trg_transfer_ledger_invariants_ledger");
-        }
     }
 
     private void createAccount(UUID id, String name, String currency, String balance) {

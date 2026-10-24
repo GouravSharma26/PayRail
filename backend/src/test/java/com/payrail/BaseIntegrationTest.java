@@ -49,4 +49,19 @@ public abstract class BaseIntegrationTest {
                 CASCADE
                 """);
     }
+
+    protected void withTriggersDisabled(Runnable action) {
+        jdbcTemplate.execute("ALTER TABLE transfers DISABLE TRIGGER trg_transfer_ledger_invariants_transfers");
+        jdbcTemplate.execute("ALTER TABLE ledger_entries DISABLE TRIGGER trg_transfer_ledger_invariants_ledger");
+        jdbcTemplate.execute("ALTER TABLE accounts DISABLE TRIGGER trg_account_balance_invariants_accounts");
+        jdbcTemplate.execute("ALTER TABLE ledger_entries DISABLE TRIGGER trg_account_balance_invariants_ledger");
+        try {
+            action.run();
+        } finally {
+            jdbcTemplate.execute("ALTER TABLE transfers ENABLE TRIGGER trg_transfer_ledger_invariants_transfers");
+            jdbcTemplate.execute("ALTER TABLE ledger_entries ENABLE TRIGGER trg_transfer_ledger_invariants_ledger");
+            jdbcTemplate.execute("ALTER TABLE accounts ENABLE TRIGGER trg_account_balance_invariants_accounts");
+            jdbcTemplate.execute("ALTER TABLE ledger_entries ENABLE TRIGGER trg_account_balance_invariants_ledger");
+        }
+    }
 }

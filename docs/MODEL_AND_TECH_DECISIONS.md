@@ -50,12 +50,13 @@ A technical review of Phase 2 identified 5 key areas for remediation:
 5. Correcting PostgreSQL immutability error classification from `23505` (`unique_violation`) to `23514` (`check_violation` / `DataIntegrityViolationException`).
 
 **Decisions:**
-1. **Deferred Constraint Triggers (Finding 1):** Flyway migration `V3__ledger_invariant_deferred_triggers.sql` adds PostgreSQL deferred constraint triggers `trg_transfer_ledger_invariants_transfers` and `trg_transfer_ledger_invariants_ledger` backed by `check_transfer_ledger_invariants()`. Configured as `DEFERRABLE INITIALLY DEFERRED FOR EACH ROW`, these triggers allow multi-statement transactions to insert/update rows in any order and evaluate the final committed state at transaction `COMMIT`. At commit, they verify:
-   - A `SUCCEEDED` transfer has exactly 2 ledger entries: one `DEBIT` and one `CREDIT`.
-   - The `DEBIT` leg belongs to `transfer.source_account_id`, matches transfer amount, and matches transfer currency.
-   - The `CREDIT` leg belongs to `transfer.destination_account_id`, matches transfer amount, and matches transfer currency.
-   - Non-`SUCCEEDED` transfers (`PENDING`, `PROCESSING`, `FAILED`) have strictly 0 ledger entries.
-   - Any violation aborts the transaction with SQLSTATE `23514` (`check_violation`).
+1. **Deferred Constraint Triggers (Finding 1 & Finding 2):**
+   - Flyway migration `V3__ledger_invariant_deferred_triggers.sql` adds PostgreSQL deferred constraint triggers `trg_transfer_ledger_invariants_transfers` and `trg_transfer_ledger_invariants_ledger` backed by `check_transfer_ledger_invariants()`. Configured as `DEFERRABLE INITIALLY DEFERRED FOR EACH ROW`, these triggers allow multi-statement transactions to insert/update rows in any order and evaluate the final committed state at transaction `COMMIT`.
+   - Flyway migration `V5__enforce_account_balance_and_currency_invariants.sql` enhances commit-time verification by:
+     - Enforcing that for any active or completed transfer (`status <> 'FAILED'`), the transfer currency strictly matches both `source_account.currency` and `destination_account.currency`.
+     - Adding `check_account_balance_projection_invariants()` triggered via `trg_account_balance_invariants_accounts` and `trg_account_balance_invariants_ledger`. At commit time, for every affected account, the database asserts:
+       `current_balance = opening_balance + total credits - total debits`
+       Any mismatch or independent balance modification aborts the transaction with SQLSTATE `23514` (`check_violation`).
 2. **Phase 2 Transfer State Lifecycle (Finding 2):** In Phase 2, `TransferPostingService` executes synchronously on the calling thread, transitioning `PENDING -> SUCCEEDED` or `PENDING -> FAILED` atomically with balance updates and ledger entries. As documented in the Phase 2 contract, persisting an intermediate `PROCESSING` state across separate transactions without an active crash recovery worker (such as the Phase 3 Kafka lease manager) would leave transfers stranded in `PROCESSING` if a crash occurred before posting. Therefore, direct posting is explicitly documented as the synchronous Phase 2 path, which Phase 3 will supersede with durable worker leases and heartbeat-driven recovery.
 3. **Hardened Full Reconciliation (Finding 3):** `ReconciliationService.runFullAudit()` performs a comprehensive, read-only audit verifying:
    - Account balances match synthetic opening balance plus net ledger activity (`current_balance == opening_balance - debits + credits`).
@@ -64,8 +65,14 @@ A technical review of Phase 2 identified 5 key areas for remediation:
    - Leg amounts and currencies match the transfer and account currencies.
    - Zero ledger entries exist for non-`SUCCEEDED` transfers.
    - Discrepancies are reported in `ReconciliationReport` without performing silent auto-repairs.
-4. **Development Endpoint Isolation (Finding 4):** `POST /api/v1/transfers/{transferId}/process` is moved out of the public `TransferController` and into `DevTransferProcessingController`, guarded by `@ConditionalOnProperty(prefix = "payrail.processing", name = "manual-endpoint-enabled", havingValue = "true")`. Enabled only in dev/test profiles (`application-dev.yml` and `application-test.yml`), it is absent (returning HTTP 404) in default production configurations.
-5. **Database Error Classification (Finding 5):** The immutability triggers in `V2__ledger_immutability_and_triggers.sql` use SQLSTATE `23514` (`check_violation`), which Spring translates to `DataIntegrityViolationException`, preventing misclassification as `DuplicateKeyException` (which would trigger retry/replay logic).
+4. **Safe Default Runtime & Endpoint Isolation (Finding 1 & Finding 4):**
+   - The implicit `active: dev` default in `application.yml` has been removed (`active: ${SPRING_PROFILES_ACTIVE:}`). When `SPRING_PROFILES_ACTIVE` is unset, the application runs under the standard `default` profile.
+   - `payrail.seed.enabled: false` and `payrail.processing.manual-endpoint-enabled: false` by default, ensuring that `DevDataSeeder` does not execute and `POST /api/v1/transfers/{transferId}/process` is not registered (returning HTTP 404).
+   - Developers explicitly opt into development mode via `SPRING_PROFILES_ACTIVE=dev` or `java -Dspring.profiles.active=dev -jar ...`.
+5. **Flyway History Preservation & Error Classification (Finding 3 & Finding 5):**
+   - `V2__ledger_immutability_and_triggers.sql` has been restored to its exact original contents at commit `4c0015a`, preserving historical migration checksums.
+   - Flyway migration `V4__correct_immutability_trigger_sqlstate.sql` updates `prevent_ledger_mutation()` and `prevent_status_history_mutation()` to raise SQLSTATE `23514` (`check_violation`), which Spring translates to `DataIntegrityViolationException`, preventing misclassification as `DuplicateKeyException`.
+   - Verified via `FlywayMigrationIntegrationTest` that existing databases on V2 upgrade cleanly to V5 with `validate-on-migrate` enabled without checksum errors.
 
 ## Exact version record (verified 2026-10-24)
 

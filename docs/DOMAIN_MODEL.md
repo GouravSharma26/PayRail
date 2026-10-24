@@ -88,6 +88,8 @@ Rules:
 13. Balance changes, ledger pair, successful status, status history, and consumer dedupe record must commit atomically.
 14. Retry/outbox work must be durable before the consumer acknowledges the original event.
 
+> **Database-Enforced Invariants:** Invariants 3, 6, 7, 8, 9, and 10 are enforced directly by PostgreSQL triggers independent of application code. Triggers `trg_transfer_ledger_invariants_transfers`, `trg_transfer_ledger_invariants_ledger`, `trg_account_balance_invariants_accounts`, and `trg_account_balance_invariants_ledger` are deferred constraint triggers (`DEFERRABLE INITIALLY DEFERRED FOR EACH ROW`) evaluated at transaction commit. They reject mismatched transfer currencies, non-succeeded transfers with ledger entries, missing or mismatched debit/credit legs, and any account balance that does not equal `opening_balance + total credits - total debits`. Immutability triggers raise SQLSTATE `23514` on unauthorized `UPDATE` or `DELETE`.
+
 ## 5. Failure taxonomy
 
 ### Permanent business failures

@@ -60,11 +60,15 @@ class PostgresLedgerInvariantTriggerIntegrationTest extends BaseIntegrationTest 
         UUID transferId = UUID.randomUUID();
         createPendingTransfer(transferId, srcId, dstId, "100.00", "INR");
 
-        // Attempt to insert ledger entry while transfer is still PENDING
+        // Attempt to insert ledger entry while transfer is still PENDING (with balanced account to isolate transfer trigger)
         assertThatThrownBy(() -> jdbcTemplate.execute(String.format("""
-                INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
-                VALUES ('%s', '%s', '%s', 'DEBIT', 100.00, 'INR', now());
-                """, UUID.randomUUID(), transferId, srcId)))
+                DO $$
+                BEGIN
+                    UPDATE accounts SET current_balance = current_balance - 100.00 WHERE id = '%s';
+                    INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
+                    VALUES ('%s', '%s', '%s', 'DEBIT', 100.00, 'INR', now());
+                END $$;
+                """, srcId, UUID.randomUUID(), transferId, srcId)))
                 .isInstanceOf(DataIntegrityViolationException.class)
                 .hasMessageContaining("Ledger invariant violation")
                 .hasMessageContaining("with status PENDING must have 0 ledger entries");
@@ -174,10 +178,12 @@ class PostgresLedgerInvariantTriggerIntegrationTest extends BaseIntegrationTest 
         UUID transferId = UUID.randomUUID();
         createPendingTransfer(transferId, srcId, dstId, "75.00", "INR");
 
-        // Multi-statement transaction in single execution with valid debit/credit
+        // Multi-statement transaction in single execution with valid debit/credit and consistent balance updates
         jdbcTemplate.execute(String.format("""
                 DO $$
                 BEGIN
+                    UPDATE accounts SET current_balance = current_balance - 75.00, updated_at = now() WHERE id = '%s';
+                    UPDATE accounts SET current_balance = current_balance + 75.00, updated_at = now() WHERE id = '%s';
                     UPDATE transfers SET status = 'SUCCEEDED', completed_at = now() WHERE id = '%s';
                     INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
                     VALUES ('%s', '%s', '%s', 'DEBIT', 75.00, 'INR', now());
@@ -185,6 +191,8 @@ class PostgresLedgerInvariantTriggerIntegrationTest extends BaseIntegrationTest 
                     VALUES ('%s', '%s', '%s', 'CREDIT', 75.00, 'INR', now());
                 END $$;
                 """,
+                srcId,
+                dstId,
                 transferId,
                 UUID.randomUUID(), transferId, srcId,
                 UUID.randomUUID(), transferId, dstId
@@ -196,6 +204,80 @@ class PostgresLedgerInvariantTriggerIntegrationTest extends BaseIntegrationTest 
                 transferId
         );
         assertThat(entryCount).isEqualTo(2);
+
+        AccountRecord updatedSrc = accountRepository.findById(srcId).orElseThrow();
+        AccountRecord updatedDst = accountRepository.findById(dstId).orElseThrow();
+        assertThat(updatedSrc.currentBalance()).isEqualByComparingTo("425.00");
+        assertThat(updatedDst.currentBalance()).isEqualByComparingTo("175.00");
+    }
+
+    @Test
+    @DisplayName("Finding 2: Database deferred trigger rejects committing a transfer whose currency does not match source or destination account currency")
+    void shouldRejectTransferWithCurrencyMismatchAgainstAccountAtCommit() {
+        UUID srcId = UUID.randomUUID();
+        UUID dstId = UUID.randomUUID();
+        createAccount(srcId, "Sender INR", "INR", "500.00");
+        createAccount(dstId, "Recipient INR", "INR", "100.00");
+
+        UUID transferId = UUID.randomUUID();
+
+        // Attempt direct SQL insertion of transfer with EUR currency between INR accounts
+        assertThatThrownBy(() -> jdbcTemplate.execute(String.format("""
+                INSERT INTO transfers (
+                    id, source_account_id, destination_account_id, amount, currency,
+                    status, correlation_id, created_at, updated_at
+                ) VALUES (
+                    '%s', '%s', '%s', 50.00, 'EUR', 'PENDING', '%s', now(), now()
+                );
+                """, transferId, srcId, dstId, UUID.randomUUID())))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("transfer currency EUR does not match source account currency INR");
+    }
+
+    @Test
+    @DisplayName("Finding 2: Database deferred trigger rejects committing a successful transfer with valid debit/credit pair but unchanged account balances")
+    void shouldRejectSucceededTransferWithUnchangedAccountBalancesAtCommit() {
+        UUID srcId = UUID.randomUUID();
+        UUID dstId = UUID.randomUUID();
+        createAccount(srcId, "Sender", "INR", "500.00");
+        createAccount(dstId, "Recipient", "INR", "100.00");
+
+        UUID transferId = UUID.randomUUID();
+        createPendingTransfer(transferId, srcId, dstId, "50.00", "INR");
+
+        // Legitimate ledger entries and SUCCEEDED transfer status, but account balances are NOT updated
+        assertThatThrownBy(() -> jdbcTemplate.execute(String.format("""
+                DO $$
+                BEGIN
+                    UPDATE transfers SET status = 'SUCCEEDED', completed_at = now() WHERE id = '%s';
+                    INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
+                    VALUES ('%s', '%s', '%s', 'DEBIT', 50.00, 'INR', now());
+                    INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
+                    VALUES ('%s', '%s', '%s', 'CREDIT', 50.00, 'INR', now());
+                END $$;
+                """,
+                transferId,
+                UUID.randomUUID(), transferId, srcId,
+                UUID.randomUUID(), transferId, dstId
+        )))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("Account balance invariant violation")
+                .hasMessageContaining("current_balance (500.00) does not match opening_balance (500.00) + credits (0.00) - debits (50.00) = expected 450.00");
+    }
+
+    @Test
+    @DisplayName("Finding 2: Database deferred trigger rejects committing an account balance changed independently of ledger activity")
+    void shouldRejectIndependentAccountBalanceChangeWithoutLedgerActivity() {
+        UUID accountId = UUID.randomUUID();
+        createAccount(accountId, "Tampered Account", "INR", "1000.00");
+
+        // Attempt direct SQL balance update without corresponding ledger entries
+        assertThatThrownBy(() -> jdbcTemplate.execute(String.format("""
+                UPDATE accounts SET current_balance = 1250.00 WHERE id = '%s';
+                """, accountId)))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("Account balance invariant violation")
+                .hasMessageContaining("current_balance (1250.00) does not match opening_balance (1000.00) + credits (0.00) - debits (0.00) = expected 1000.00");
     }
 
     @Test
@@ -213,6 +295,8 @@ class PostgresLedgerInvariantTriggerIntegrationTest extends BaseIntegrationTest 
         jdbcTemplate.execute(String.format("""
                 DO $$
                 BEGIN
+                    UPDATE accounts SET current_balance = current_balance - 50.00, updated_at = now() WHERE id = '%s';
+                    UPDATE accounts SET current_balance = current_balance + 50.00, updated_at = now() WHERE id = '%s';
                     UPDATE transfers SET status = 'SUCCEEDED', completed_at = now() WHERE id = '%s';
                     INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
                     VALUES ('%s', '%s', '%s', 'DEBIT', 50.00, 'INR', now());
@@ -220,6 +304,8 @@ class PostgresLedgerInvariantTriggerIntegrationTest extends BaseIntegrationTest 
                     VALUES ('%s', '%s', '%s', 'CREDIT', 50.00, 'INR', now());
                 END $$;
                 """,
+                srcId,
+                dstId,
                 transferId,
                 entryId, transferId, srcId,
                 UUID.randomUUID(), transferId, dstId

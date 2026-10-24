@@ -175,7 +175,9 @@ class LedgerPostingIntegrationTest extends BaseIntegrationTest {
         createAccount(dstId, "USD Recipient", "USD", "500.00");
 
         UUID transferId = UUID.randomUUID();
-        createPendingTransfer(transferId, srcId, dstId, "50.00", "INR");
+        withTriggersDisabled(() -> {
+            createPendingTransfer(transferId, srcId, dstId, "50.00", "INR");
+        });
 
         TransferPostingResult result = postingService.postTransfer(transferId);
 
