@@ -54,6 +54,7 @@ public abstract class BaseIntegrationTest {
         jdbcTemplate.execute("ALTER TABLE transfers DISABLE TRIGGER trg_transfer_ledger_invariants_transfers");
         jdbcTemplate.execute("ALTER TABLE ledger_entries DISABLE TRIGGER trg_transfer_ledger_invariants_ledger");
         jdbcTemplate.execute("ALTER TABLE accounts DISABLE TRIGGER trg_account_balance_invariants_accounts");
+        jdbcTemplate.execute("ALTER TABLE accounts DISABLE TRIGGER trg_protect_account_baseline_mutation");
         jdbcTemplate.execute("ALTER TABLE ledger_entries DISABLE TRIGGER trg_account_balance_invariants_ledger");
         try {
             action.run();
@@ -61,6 +62,7 @@ public abstract class BaseIntegrationTest {
             jdbcTemplate.execute("ALTER TABLE transfers ENABLE TRIGGER trg_transfer_ledger_invariants_transfers");
             jdbcTemplate.execute("ALTER TABLE ledger_entries ENABLE TRIGGER trg_transfer_ledger_invariants_ledger");
             jdbcTemplate.execute("ALTER TABLE accounts ENABLE TRIGGER trg_account_balance_invariants_accounts");
+            jdbcTemplate.execute("ALTER TABLE accounts ENABLE TRIGGER trg_protect_account_baseline_mutation");
             jdbcTemplate.execute("ALTER TABLE ledger_entries ENABLE TRIGGER trg_account_balance_invariants_ledger");
         }
     }

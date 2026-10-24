@@ -10,8 +10,8 @@ PayRail simulates internal transfers between fictional accounts. It does not mov
 
 - `id`: UUID.
 - `display_name`: synthetic label only; no real personal data.
-- `currency`: uppercase three-character code, e.g. `INR`, `USD`, or `EUR` (test data may use these codes without claiming currency conversion).
-- `opening_balance`: immutable synthetic baseline, >= 0.
+- `currency`: uppercase three-character code, e.g. `INR`, `USD`, or `EUR` (test data may use these codes without claiming currency conversion). Immutable once created; enforced by PostgreSQL engine trigger `trg_protect_account_baseline_mutation`.
+- `opening_balance`: immutable synthetic baseline, >= 0. Immutable once created; enforced by PostgreSQL engine trigger `trg_protect_account_baseline_mutation`.
 - `current_balance`: cached current balance, updated in the same transaction as ledger postings.
 - `status`: `ACTIVE` or `INACTIVE`.
 - `created_at`, `updated_at`: UTC timestamps.
@@ -75,7 +75,7 @@ Rules:
 
 1. `amount > 0`.
 2. Source and destination account IDs differ.
-3. Source and destination currencies equal the transfer currency.
+3. Source and destination currencies equal the transfer currency. Account currencies cannot be changed after creation.
 4. Only `ACTIVE` accounts can send/receive in the MVP.
 5. A transfer cannot spend from an account whose current balance is less than the amount.
 6. For each `SUCCEEDED` transfer: exactly two ledger entries exist, one debit and one credit, equal amount/currency, applied to source/destination respectively.
@@ -87,8 +87,9 @@ Rules:
 12. If an idempotency key is retried with the same request, do not create another transfer/outbox event. If the request differs, return conflict.
 13. Balance changes, ledger pair, successful status, status history, and consumer dedupe record must commit atomically.
 14. Retry/outbox work must be durable before the consumer acknowledges the original event.
+15. Account `currency` and `opening_balance` are strictly immutable after creation.
 
-> **Database-Enforced Invariants:** Invariants 3, 6, 7, 8, 9, and 10 are enforced directly by PostgreSQL triggers independent of application code. Triggers `trg_transfer_ledger_invariants_transfers`, `trg_transfer_ledger_invariants_ledger`, `trg_account_balance_invariants_accounts`, and `trg_account_balance_invariants_ledger` are deferred constraint triggers (`DEFERRABLE INITIALLY DEFERRED FOR EACH ROW`) evaluated at transaction commit. They reject mismatched transfer currencies, non-succeeded transfers with ledger entries, missing or mismatched debit/credit legs, and any account balance that does not equal `opening_balance + total credits - total debits`. Immutability triggers raise SQLSTATE `23514` on unauthorized `UPDATE` or `DELETE`.
+> **Database-Enforced Invariants:** Invariants 3, 6, 7, 8, 9, 10, and 15 are enforced directly by PostgreSQL triggers independent of application code. Trigger `trg_protect_account_baseline_mutation` executes `BEFORE UPDATE ON accounts` and rejects any change to `currency` or `opening_balance` with SQLSTATE `23514`. Triggers `trg_transfer_ledger_invariants_transfers`, `trg_transfer_ledger_invariants_ledger`, `trg_account_balance_invariants_accounts`, and `trg_account_balance_invariants_ledger` are deferred constraint triggers (`DEFERRABLE INITIALLY DEFERRED FOR EACH ROW`) evaluated at transaction commit. They reject mismatched transfer currencies, non-succeeded transfers with ledger entries, missing or mismatched debit/credit legs, and any account balance that does not equal `opening_balance + total credits - total debits`. Immutability triggers raise SQLSTATE `23514` on unauthorized `UPDATE` or `DELETE`.
 
 ## 5. Failure taxonomy
 

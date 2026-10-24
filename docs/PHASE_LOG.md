@@ -230,6 +230,37 @@
 - **Known limitations:** None for Phase 2.
 - **Reviewer notes / follow-up:** Phase 2 final review remediation complete. All gate criteria verified. Waiting at Phase 2 gate for approval.
 
+### 2026-10-24 — Phase 2: Final Invariant Hardening
+
+- **Commit:** `f4b3a3f`
+- **Scope:** Fix two remaining database-invariant gaps identified in independent review: Finding 1 (Make account currency immutable via PostgreSQL trigger) and Finding 2 (Enforce opening-balance immutability via PostgreSQL BEFORE UPDATE trigger against single and coupled updates).
+- **Files changed:**
+  - `backend/src/main/resources/db/migration/V6__protect_immutable_account_baselines.sql` (added BEFORE UPDATE trigger trg_protect_account_baseline_mutation preventing changes to accounts.currency and accounts.opening_balance with SQLSTATE 23514)
+  - `backend/src/test/java/com/payrail/BaseIntegrationTest.java` (updated withTriggersDisabled to manage trg_protect_account_baseline_mutation during corrupted test fixtures)
+  - `backend/src/test/java/com/payrail/FlywayMigrationIntegrationTest.java` (updated migration tests to assert V6 applied on fresh and upgrade paths, verified trg_protect_account_baseline_mutation catalog existence, and confirmed validate-on-migrate passes)
+  - `backend/src/test/java/com/payrail/PostgresLedgerInvariantTriggerIntegrationTest.java` (added direct-SQL integration tests verifying currency immutability before transfer, currency immutability after transfer/ledger, isolation of state after rollback, opening_balance single update rejection, opening_balance and current_balance coupled update rejection, and legitimate balance update pass-through)
+  - `docs/DOMAIN_MODEL.md` (documented immutable currency and opening balance baselines enforced by PostgreSQL trigger)
+  - `docs/MODEL_AND_TECH_DECISIONS.md` (recorded ADR-012)
+  - `docs/PHASE_LOG.md` (recorded invariant hardening verification evidence)
+- **Design decision(s):**
+  - ADR-012: Enforced account currency and opening_balance immutability at the PostgreSQL engine level using a BEFORE UPDATE trigger (`trg_protect_account_baseline_mutation`) raising SQLSTATE `23514` (`check_violation`). This closes the risk of coupled balance rewriting bypassing the deferred projection trigger, and blocks currency drift across existing transfer/ledger histories while preserving normal transfer balance updates.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 88 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 20.101s, 88 tests run, 0 failures, 0 errors, 0 skipped; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+- **Test results:** unit `33 passed / 0 failed`; integration `55 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (88 total tests passing).
+- **Acceptance criteria verified:**
+  - Finding 1: Direct SQL attempting currency update before any transfer exists is rejected with SQLSTATE 23514 / check_violation.
+  - Finding 1: Direct SQL attempting currency update when referenced by successful transfer and existing ledger entries is rejected.
+  - Finding 1: Account currency and ledger entries remain completely unchanged after rejected transactions.
+  - Finding 1: Normal account creation and successful transfers proceed unimpeded.
+  - Finding 2: Direct SQL attempting to modify only opening_balance is rejected with SQLSTATE 23514 / check_violation.
+  - Finding 2: Direct SQL attempting coupled update of opening_balance and current_balance by same delta is rejected by BEFORE UPDATE trigger before deferred projection trigger is reached.
+  - Finding 2: Valid transfers debit and credit account balances while opening balances remain unchanged.
+  - Migration: Fresh database migrates cleanly through V1–V6; upgrade test from historical V1/V2 database applies V3–V6 cleanly with `validate-on-migrate` and 0 checksum mismatches.
+- **Not verified / blocked:** Phase 3 Kafka outbox publishing, event consumers, DLQ, and lease recovery (intentionally deferred to Phase 3).
+- **Known limitations:** None for Phase 2.
+- **Reviewer notes / follow-up:** Phase 2 Final Invariant Hardening complete. All invariant gaps closed at database engine level. Ready for independent review and approval.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name

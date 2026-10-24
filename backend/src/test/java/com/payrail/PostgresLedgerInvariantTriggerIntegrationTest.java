@@ -323,6 +323,143 @@ class PostgresLedgerInvariantTriggerIntegrationTest extends BaseIntegrationTest 
                 .hasMessageContaining("Ledger entries are strictly append-only and immutable");
     }
 
+    @Test
+    @DisplayName("Finding 1: Database trigger rejects changing account currency before any transfer exists")
+    void shouldRejectAccountCurrencyUpdateBeforeAnyTransferExists() {
+        UUID accountId = UUID.randomUUID();
+        createAccount(accountId, "Standalone Account", "INR", "500.00");
+
+        assertThatThrownBy(() -> jdbcTemplate.update("UPDATE accounts SET currency = 'USD' WHERE id = ?", accountId))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("Account invariant violation")
+                .hasMessageContaining("currency is immutable (attempted modification from INR to USD)");
+
+        AccountRecord account = accountRepository.findById(accountId).orElseThrow();
+        assertThat(account.currency()).isEqualTo("INR");
+    }
+
+    @Test
+    @DisplayName("Finding 1: Database trigger rejects changing currency of account referenced by transfer and ledger, keeping state intact")
+    void shouldRejectAccountCurrencyUpdateWhenReferencedBySuccessfulTransferAndLedger() {
+        UUID srcId = UUID.randomUUID();
+        UUID dstId = UUID.randomUUID();
+        createAccount(srcId, "Sender", "INR", "1000.00");
+        createAccount(dstId, "Recipient", "INR", "200.00");
+
+        UUID transferId = UUID.randomUUID();
+        createPendingTransfer(transferId, srcId, dstId, "150.00", "INR");
+
+        // Execute successful posting with balanced ledger entries
+        UUID debitEntryId = UUID.randomUUID();
+        UUID creditEntryId = UUID.randomUUID();
+        jdbcTemplate.execute(String.format("""
+                DO $$
+                BEGIN
+                    UPDATE accounts SET current_balance = current_balance - 150.00, updated_at = now() WHERE id = '%s';
+                    UPDATE accounts SET current_balance = current_balance + 150.00, updated_at = now() WHERE id = '%s';
+                    UPDATE transfers SET status = 'SUCCEEDED', completed_at = now() WHERE id = '%s';
+                    INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
+                    VALUES ('%s', '%s', '%s', 'DEBIT', 150.00, 'INR', now());
+                    INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
+                    VALUES ('%s', '%s', '%s', 'CREDIT', 150.00, 'INR', now());
+                END $$;
+                """,
+                srcId, dstId, transferId,
+                debitEntryId, transferId, srcId,
+                creditEntryId, transferId, dstId
+        ));
+
+        // Attempt direct SQL currency change on source account
+        assertThatThrownBy(() -> jdbcTemplate.update("UPDATE accounts SET currency = 'EUR' WHERE id = ?", srcId))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("Account invariant violation")
+                .hasMessageContaining("currency is immutable (attempted modification from INR to EUR)");
+
+        // Verify account currency, balance, and ledger entries remain completely unchanged
+        AccountRecord src = accountRepository.findById(srcId).orElseThrow();
+        assertThat(src.currency()).isEqualTo("INR");
+        assertThat(src.currentBalance()).isEqualByComparingTo("850.00");
+
+        String debitCurrency = jdbcTemplate.queryForObject(
+                "SELECT currency FROM ledger_entries WHERE id = ?",
+                String.class,
+                debitEntryId
+        );
+        assertThat(debitCurrency).isEqualTo("INR");
+    }
+
+    @Test
+    @DisplayName("Finding 2: Database trigger rejects modifying only opening_balance on accounts")
+    void shouldRejectAccountOpeningBalanceUpdateOnly() {
+        UUID accountId = UUID.randomUUID();
+        createAccount(accountId, "Baseline Account", "INR", "1000.00");
+
+        assertThatThrownBy(() -> jdbcTemplate.update("UPDATE accounts SET opening_balance = 2000.00 WHERE id = ?", accountId))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("Account invariant violation")
+                .hasMessageContaining("opening_balance is immutable (attempted modification from 1000.00 to 2000.00)");
+
+        AccountRecord account = accountRepository.findById(accountId).orElseThrow();
+        assertThat(account.openingBalance()).isEqualByComparingTo("1000.00");
+    }
+
+    @Test
+    @DisplayName("Finding 2: Database trigger rejects coupled update of opening_balance and current_balance by same amount")
+    void shouldRejectCoupledOpeningBalanceAndCurrentBalanceUpdate() {
+        UUID accountId = UUID.randomUUID();
+        createAccount(accountId, "Coupled Tampering Account", "INR", "1000.00");
+
+        // Attempting to change opening_balance and current_balance together to fool projection trigger
+        assertThatThrownBy(() -> jdbcTemplate.update("UPDATE accounts SET opening_balance = 1500.00, current_balance = 1500.00 WHERE id = ?", accountId))
+                .isInstanceOf(DataIntegrityViolationException.class)
+                .hasMessageContaining("Account invariant violation")
+                .hasMessageContaining("opening_balance is immutable (attempted modification from 1000.00 to 1500.00)");
+
+        AccountRecord account = accountRepository.findById(accountId).orElseThrow();
+        assertThat(account.openingBalance()).isEqualByComparingTo("1000.00");
+        assertThat(account.currentBalance()).isEqualByComparingTo("1000.00");
+    }
+
+    @Test
+    @DisplayName("Finding 1 & 2: Valid transfer modifies current_balance while opening_balance and currency remain unchanged")
+    void shouldPermitValidTransferModifyingCurrentBalanceWhileOpeningBalanceRemainsUnchanged() {
+        UUID srcId = UUID.randomUUID();
+        UUID dstId = UUID.randomUUID();
+        createAccount(srcId, "Sender", "INR", "1000.00");
+        createAccount(dstId, "Recipient", "INR", "500.00");
+
+        UUID transferId = UUID.randomUUID();
+        createPendingTransfer(transferId, srcId, dstId, "200.00", "INR");
+
+        jdbcTemplate.execute(String.format("""
+                DO $$
+                BEGIN
+                    UPDATE accounts SET current_balance = current_balance - 200.00, updated_at = now() WHERE id = '%s';
+                    UPDATE accounts SET current_balance = current_balance + 200.00, updated_at = now() WHERE id = '%s';
+                    UPDATE transfers SET status = 'SUCCEEDED', completed_at = now() WHERE id = '%s';
+                    INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
+                    VALUES ('%s', '%s', '%s', 'DEBIT', 200.00, 'INR', now());
+                    INSERT INTO ledger_entries (id, transfer_id, account_id, leg, amount, currency, created_at)
+                    VALUES ('%s', '%s', '%s', 'CREDIT', 200.00, 'INR', now());
+                END $$;
+                """,
+                srcId, dstId, transferId,
+                UUID.randomUUID(), transferId, srcId,
+                UUID.randomUUID(), transferId, dstId
+        ));
+
+        AccountRecord src = accountRepository.findById(srcId).orElseThrow();
+        AccountRecord dst = accountRepository.findById(dstId).orElseThrow();
+
+        assertThat(src.currentBalance()).isEqualByComparingTo("800.00");
+        assertThat(src.openingBalance()).isEqualByComparingTo("1000.00");
+        assertThat(src.currency()).isEqualTo("INR");
+
+        assertThat(dst.currentBalance()).isEqualByComparingTo("700.00");
+        assertThat(dst.openingBalance()).isEqualByComparingTo("500.00");
+        assertThat(dst.currency()).isEqualTo("INR");
+    }
+
     private void createAccount(UUID id, String name, String currency, String balance) {
         accountRepository.insert(new AccountRecord(
                 id,

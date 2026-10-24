@@ -74,6 +74,26 @@ A technical review of Phase 2 identified 5 key areas for remediation:
    - Flyway migration `V4__correct_immutability_trigger_sqlstate.sql` updates `prevent_ledger_mutation()` and `prevent_status_history_mutation()` to raise SQLSTATE `23514` (`check_violation`), which Spring translates to `DataIntegrityViolationException`, preventing misclassification as `DuplicateKeyException`.
    - Verified via `FlywayMigrationIntegrationTest` that existing databases on V2 upgrade cleanly to V5 with `validate-on-migrate` enabled without checksum errors.
 
+## ADR-012 — Account Currency and Opening Balance Immutability (Flyway V6)
+**Context:**
+An independent review of Phase 2 commit `e1180b2` identified two remaining database-invariant gaps:
+1. In `V5__enforce_account_balance_and_currency_invariants.sql`, transfer-currency validation runs on transfers and ledger entries, but an account currency update does not revalidate the account's existing transfers and ledger entries. In this single-currency simulator, account currency must never change once created.
+2. In `V5`, the balance projection trigger checks `current_balance = opening_balance + sum(credits) - sum(debits)`. However, a direct SQL transaction could rewrite `opening_balance` and `current_balance` by the same delta, preserving the projection equality while silently corrupting the synthetic opening baseline.
+
+**Decisions:**
+1. **Engine-Level Immutability Trigger (`trg_protect_account_baseline_mutation`):**
+   - Implemented in new migration `V6__protect_immutable_account_baselines.sql`. Committed migrations V1–V5 remain completely untouched.
+   - Creates function `prevent_account_baseline_mutation()` and trigger `trg_protect_account_baseline_mutation` running `BEFORE UPDATE ON accounts FOR EACH ROW`.
+   - Rejects any update where `NEW.currency <> OLD.currency` or `NEW.opening_balance <> OLD.opening_balance` by raising SQLSTATE `23514` (`check_violation`) with descriptive integrity error messages (`Account currency is immutable once created` / `Account opening_balance is immutable once created`).
+   - Spring translates SQLSTATE `23514` to `DataIntegrityViolationException`, maintaining consistent error taxonomy.
+2. **Transfer Transparency:**
+   - Normal transfers update `current_balance` and `updated_at`, leaving `currency` and `opening_balance` identical (`NEW.currency = OLD.currency`, `NEW.opening_balance = OLD.opening_balance`). These updates proceed unimpeded.
+3. **Coupled Tampering Prevention:**
+   - Because `trg_protect_account_baseline_mutation` executes `BEFORE UPDATE`, any coupled SQL statement modifying both `opening_balance` and `current_balance` fails immediately at statement execution before the deferred projection trigger is reached.
+4. **Migration & Upgrade Verification:**
+   - Verified that a fresh database migrates cleanly through V1–V6.
+   - Verified that an upgrade test carrying the original historical V1/V2 database migrates through V6 with `validate-on-migrate` enabled and zero checksum mismatches.
+
 ## Exact version record (verified 2026-10-24)
 
 | Component | Pinned version/tag | Compatibility verified against | Official source | Date |
