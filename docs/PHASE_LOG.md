@@ -53,7 +53,7 @@
 
 ### 2026-10-24 — Phase 1: Core domain and REST API
 
-- **Commit:** pending commit
+- **Commit:** `382a482`
 - **Scope:** Implementation of synthetic accounts, transfer submission, request validation, transaction-state management, durable idempotency, outbox event persistence, Flyway migrations, OpenAPI documentation, and automated unit/integration tests with Testcontainers.
 - **Files changed:**
   - `backend/src/main/resources/db/migration/V1__initial_schema.sql` (Authoritative 10-table relational schema with strict check constraints and indexes)
