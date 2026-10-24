@@ -12,7 +12,7 @@
 
 ### 2026-10-24 — Phase 0: Workspace reconnaissance and design lock
 
-- **Commit:** `not committed` (untracked files prepared in clean working tree)
+- **Commit:** `95301f9`
 - **Scope:** Workspace inspection, toolchain verification (Java 21, Docker/Compose, Maven Wrapper), official dependency compatibility verification, repository layout proposal, and recording pinned architectural decisions.
 - **Files changed:**
   - `docs/MODEL_AND_TECH_DECISIONS.md` (recorded pinned versions, sources, ADR-009 repository layout, synthetic boundary)
