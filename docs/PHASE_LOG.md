@@ -261,7 +261,7 @@
 - **Known limitations:** None for Phase 2.
 ### 2026-10-24 — Phase 3: Asynchronous processing, leased outbox publisher, consumer deduplication, retries, DLQ, and lease recovery
 
-- **Commit:** `2ca6266`
+- **Commit:** `a325ec4`
 - **Scope:** Implementation of leased transactional outbox publisher with publication outside the DB transaction and `published_at` set only after broker acknowledgment, asynchronous Kafka consumer with versioned event envelope (`schema_version: 1`), consumer deduplication via `processed_messages`, terminal-transfer state guards, durable retry scheduling with bounded exponential backoff, dead-letter routing (`payrail.transfer-commands.dlq.v1`), stale outbox and processing lease recovery, and persistent reconciliation auditing.
 - **Files changed:**
   - `backend/src/main/java/com/payrail/config/KafkaConfig.java` (Topic declarations for `payrail.transfer-commands.v1` and `payrail.transfer-commands.dlq.v1`)
