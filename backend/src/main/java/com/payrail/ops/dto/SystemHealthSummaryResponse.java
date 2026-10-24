@@ -16,7 +16,7 @@ public record SystemHealthSummaryResponse(
         String kafkaStatus,
 
         @Schema(description = "Total unpublished outbox events backlog", example = "0")
-        long outboxBacklog,
+        Long outboxBacklog,
 
         @Schema(description = "Status of the most recent reconciliation audit run", example = "CLEAN")
         String lastReconciliationStatus,
@@ -25,7 +25,7 @@ public record SystemHealthSummaryResponse(
         Instant lastReconciliationTime,
 
         @Schema(description = "Count of currently open reconciliation issues", example = "0")
-        long openReconciliationIssues,
+        Long openReconciliationIssues,
 
         @Schema(description = "Timestamp when this health summary was generated")
         Instant timestamp

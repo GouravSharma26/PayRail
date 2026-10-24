@@ -15,4 +15,6 @@ public interface ReconciliationIssueRepository {
     List<ReconciliationIssueRecord> findByRunId(UUID runId);
 
     List<ReconciliationIssueRecord> findByStatus(String status);
+
+    long countByStatus(String status);
 }

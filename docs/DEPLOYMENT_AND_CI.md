@@ -39,7 +39,7 @@ Create a workflow that:
 3. Runs format/lint/static checks if configured.
 4. Runs unit and integration tests (`./mvnw -B verify` or documented equivalent), including Testcontainers on a Docker-capable runner.
 5. Produces build artifacts only after tests pass.
-6. Optionally builds the Docker image and validates Compose configuration.
+6. Builds the actual backend Docker image via `backend/Dockerfile` and validates Compose configuration with `--profile all`.
 7. Does not deploy publicly from untrusted pull requests or print secrets.
 
 Use least-privilege workflow permissions and pin action versions where practical. If CI splits unit and integration tests into jobs, both are required checks on the main branch. Do not silently exclude slow correctness tests from the required path.
@@ -89,6 +89,7 @@ curl -s http://localhost:8080/actuator/prometheus | grep payrail_
 ```
 
 ### 4. Kubernetes / Container Probes
+- **Container health check** (Dockerfile & Compose): `wget -q -O /dev/null http://localhost:8080/actuator/health/liveness || exit 1` (interval: 10s, timeout: 5s, start-period: 25s, retries: 3).
 - **Liveness probe**: `GET http://localhost:8080/actuator/health/liveness` (checks process progress)
 - **Readiness probe**: `GET http://localhost:8080/actuator/health/readiness` (checks `readinessState`, PostgreSQL, and Kafka connectivity)
 

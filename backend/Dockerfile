@@ -24,6 +24,6 @@ COPY --from=builder /workspace/backend/target/payrail-backend-*.jar app.jar
 EXPOSE 8080
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=25s --retries=3 \
-  CMD wget -q --spider http://localhost:8080/actuator/health/liveness || exit 1
+  CMD wget -q -O /dev/null http://localhost:8080/actuator/health/liveness || exit 1
 
 ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]

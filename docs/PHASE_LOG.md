@@ -473,7 +473,51 @@
   - All 143 automated tests pass with 0 failures, regressions, or skips.
 - **Not verified / blocked:** Frontend operator dashboard (Phase 5).
 - **Known limitations:** None for Phase 4.
-- **Reviewer notes / follow-up:** Phase 4 complete. All gate criteria met and verified. Ready for independent review.
+### 2026-10-25 — Phase 4: Independent Review Remediation
+
+- **Commit:** [`f28b516`](https://github.com/GouravSharma26/PayRail/commit/f28b516)
+- **Scope:** Technical remediation addressing Phase 4 review findings 1–5: resilient operational health reporting under database outages, null-safe diagnostics without falsified zero counts, repository-level SQL `COUNT(*)` for reconciliation issues, single-flight concurrency lock and bounded cooldown policy with HTTP 409 and 429 (`Retry-After`) responses on manual reconciliation triggers, strengthened configuration validation rejecting non-positive operational durations and enforcing backoff bounds, transaction-safe metrics incremented exclusively via `TransactionSynchronization.afterCommit()`, Dockerfile container healthcheck alignment using `wget`, Docker image build step in GitHub Actions CI, and full Docker Compose validation with `--profile all`.
+- **Files changed:**
+  - `backend/src/main/java/com/payrail/config/PositiveDuration.java` & `PositiveDurationValidator.java` (JSR-303 constraint rejecting zero and negative `Duration` values)
+  - `backend/src/main/java/com/payrail/config/PayRailProperties.java` (applied `@PositiveDuration` across all operational durations, added `manualTriggerCooldown` default 5s, added `@AssertTrue` for `maxBackoff >= initialBackoff`)
+  - `backend/src/main/java/com/payrail/reconciliation/repository/ReconciliationIssueRepository.java` & `JdbcReconciliationIssueRepository.java` (added `long countByStatus(String status)` using SQL `SELECT COUNT(*)`)
+  - `backend/src/main/java/com/payrail/ops/dto/SystemHealthSummaryResponse.java` (switched `outboxBacklog` and `openReconciliationIssues` from primitive `long` to boxed `Long` for null-safe diagnostics during degraded states)
+  - `backend/src/main/java/com/payrail/ops/service/OpsService.java` (fail-safe isolation of DB probe, recent runs, and open issue queries; returns `DOWN`, `DEGRADED`, or `UNKNOWN` without throwing)
+  - `backend/src/main/java/com/payrail/common/exception/ReconciliationConflictException.java` & `ReconciliationRateLimitException.java` (domain exceptions for single-flight collision and cooldown active)
+  - `backend/src/main/java/com/payrail/common/web/GlobalExceptionHandler.java` (handles `ReconciliationRateLimitException` returning HTTP 429 with `Retry-After` header)
+  - `backend/src/main/java/com/payrail/ledger/service/ReconciliationService.java` (added `auditLock` `ReentrantLock` single-flight guard, cooldown enforcement, and coordinated manual and scheduled audits)
+  - `backend/src/main/java/com/payrail/config/PayRailMetrics.java` (added `executeAfterCommit(Runnable)` wrapping durable outcome metrics in `TransactionSynchronization.afterCommit()`)
+  - `backend/Dockerfile` (updated health check to `wget -q -O /dev/null http://localhost:8080/actuator/health/liveness || exit 1`)
+  - `docker-compose.yml` (standardized health check command to match Dockerfile)
+  - `.github/workflows/ci.yml` (added `docker-build` job to build `backend/Dockerfile` and updated compose validation to include `--profile all`)
+  - `backend/src/test/java/com/payrail/config/PayRailPropertiesValidationTest.java` (10 unit tests for zero/negative durations, cooldown, and backoff order boundaries; 17 tests total)
+  - `backend/src/test/java/com/payrail/ops/OpsServiceHealthSummaryTest.java` (4 unit tests verifying resilience under DB probe, run lookup, and issue-count failures)
+  - `backend/src/test/java/com/payrail/ops/OpsControllerIntegrationTest.java` (7 integration tests including cooldown 429 with Retry-After and 6-thread concurrent single-flight race guard)
+  - `backend/src/test/java/com/payrail/metrics/TransactionAwareMetricsIntegrationTest.java` (3 integration tests verifying rolled-back transactions do not increment committed-outcome counters)
+  - `docs/API_CONTRACT.md` (documented 409 and 429 error schemas and null-safe health diagnostics)
+  - `docs/DEPLOYMENT_AND_CI.md` (documented CI image build, compose profile all, and container probe command)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (updated verified test count to 162)
+  - `docs/PHASE_LOG.md` (recorded remediation evidence)
+- **Design decision(s):**
+  - ADR-016: Resilient health reporting uses boxed `Long` for diagnostic counts, ensuring unavailable database queries produce `null` rather than false `0` counts while setting overall status to `DEGRADED` or `DOWN`. Manual reconciliation audit triggers are bounded by a single-flight `ReentrantLock` (returning HTTP 409 `RECONCILIATION_ALREADY_RUNNING`) and a default 5-second cooldown (returning HTTP 429 `RECONCILIATION_COOLDOWN_ACTIVE` with `Retry-After`). Committed-outcome Micrometer counters are deferred until Spring database transaction commits via `TransactionSynchronizationManager.registerSynchronization` `afterCommit()`, preventing phantom metrics on transaction rollback. Container healthcheck is standardized to `wget` on minimal Alpine JRE.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 162 tests run, 0 failures, 0 errors, 0 skipped in 39.814s
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 44.181s; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+  - `docker compose --profile all config` — PASS, valid Compose file configuration
+  - `docker build -f backend/Dockerfile -t payrail-backend:test .` — PASS, successfully built image `payrail-backend:test`
+  - `docker run --rm --entrypoint whoami payrail-backend:test` — PASS, output: `payrail` (non-root unprivileged user)
+  - `docker inspect --format 'User: {{.Config.User}}, HealthCheck: {{.Config.Healthcheck.Test}}' payrail-backend:test` — PASS, User: `payrail`, HealthCheck: `[CMD-SHELL wget -q -O /dev/null http://localhost:8080/actuator/health/liveness || exit 1]`
+- **Test results:** unit `54 passed / 0 failed`; integration `108 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (162 total tests passing).
+- **Acceptance criteria verified:**
+  - Finding 1: Database outage does not cause `/api/v1/ops/health/summary` to throw; reports `DOWN`, `DEGRADED`, or `UNKNOWN`; does not falsify unavailable data as 0 (serializes as `null`); uses SQL `COUNT(*)`; regression tests pass for DB probe, run lookup, and issue-count failures.
+  - Finding 2: Single-flight lock prevents concurrent manual and scheduled reconciliation audits (returns 409); bounded cooldown prevents trigger flooding (returns 429 with `Retry-After`); concurrent race test (6 parallel threads) and cooldown tests pass cleanly.
+  - Finding 3: Configuration validation rejects zero/negative durations on all operational properties; enforces `maxBackoff >= initialBackoff`; 17 validation boundary tests pass.
+  - Finding 4: Rolled-back transfer submissions, rolled-back transfer postings, and rolled-back reconciliation audits do NOT increment committed-outcome metrics counters; integration tests prove transaction safety via `TransactionSynchronization.afterCommit()`.
+  - Finding 5: GitHub Actions CI workflow includes `docker-build` step building `backend/Dockerfile` and validates compose configuration with `--profile all`; Dockerfile healthcheck standardized with `wget`; image verifies non-root `payrail` user.
+  - Invariants: Synthetic-only simulator scope strictly preserved; zero real bank integrations; no ledger entry modifications; claim fencing, idempotency, and durable outbox delivery maintained.
+- **Not verified / blocked:** Frontend operator dashboard (Phase 5).
+- **Known limitations:** None for Phase 4.
+- **Reviewer notes / follow-up:** Phase 4 independent review remediation complete. All 5 findings fully resolved and verified across 162 automated tests, Docker Compose validation, and container image build.
 
 ## Entry template
 

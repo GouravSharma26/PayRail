@@ -61,6 +61,12 @@ public class ReconciliationService {
     @Value("${payrail.reconciliation.stale-outbox-threshold:30s}")
     private Duration staleOutboxThreshold;
 
+    private final java.util.concurrent.locks.ReentrantLock auditLock = new java.util.concurrent.locks.ReentrantLock();
+    private final java.util.concurrent.atomic.AtomicReference<Instant> lastAuditFinishedAt =
+            new java.util.concurrent.atomic.AtomicReference<>(Instant.EPOCH);
+    private java.time.Clock clock = java.time.Clock.systemUTC();
+    private com.payrail.config.PayRailProperties payRailProperties;
+
     public ReconciliationService(
             NamedParameterJdbcTemplate jdbcTemplate,
             AccountRepository accountRepository,
@@ -82,6 +88,19 @@ public class ReconciliationService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     public void setMetrics(com.payrail.config.PayRailMetrics metrics) {
         this.metrics = metrics;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setPayRailProperties(com.payrail.config.PayRailProperties payRailProperties) {
+        this.payRailProperties = payRailProperties;
+    }
+
+    public void setClock(java.time.Clock clock) {
+        this.clock = clock;
+    }
+
+    public void setLastAuditFinishedAt(Instant instant) {
+        this.lastAuditFinishedAt.set(instant);
     }
 
     /**
@@ -297,11 +316,65 @@ public class ReconciliationService {
     }
 
     /**
+     * Public manual trigger endpoint handler.
+     * Enforces cooldown and single-flight lock before initiating the audit.
+     */
+    public ReconciliationRunRecord triggerManualAudit() {
+        Instant now = clock.instant();
+        Instant lastFinished = lastAuditFinishedAt.get();
+        Duration cooldown = (payRailProperties != null && payRailProperties.getReconciliation() != null)
+                ? payRailProperties.getReconciliation().getManualTriggerCooldown()
+                : Duration.ofSeconds(5);
+
+        if (cooldown != null && !cooldown.isZero() && !cooldown.isNegative()) {
+            Duration elapsed = Duration.between(lastFinished, now);
+            if (elapsed.compareTo(cooldown) < 0) {
+                long remainingSeconds = Math.max(1, cooldown.minus(elapsed).toSeconds() + 1);
+                log.warn("Manual reconciliation trigger rejected: on cooldown (remaining={}s)", remainingSeconds);
+                throw new com.payrail.common.exception.ReconciliationRateLimitException(
+                        "Reconciliation trigger on cooldown. Please wait " + remainingSeconds + " second(s).",
+                        remainingSeconds
+                );
+            }
+        }
+
+        if (!auditLock.tryLock()) {
+            log.warn("Manual reconciliation trigger rejected: audit already in progress");
+            throw new com.payrail.common.exception.ReconciliationConflictException("Reconciliation audit is already in progress.");
+        }
+
+        try {
+            return runAuditAndPersist("MANUAL_API_TRIGGER");
+        } finally {
+            lastAuditFinishedAt.set(clock.instant());
+            auditLock.unlock();
+        }
+    }
+
+    /**
      * Executes full audit, checks queues, and durably records reconciliation_runs and reconciliation_issues.
      */
     @Transactional
     public ReconciliationRunRecord runAuditAndPersist(String triggerType) {
-        Instant startedAt = Instant.now();
+        boolean acquiredByThisCall = false;
+        if (!auditLock.isHeldByCurrentThread()) {
+            if (!auditLock.tryLock()) {
+                throw new com.payrail.common.exception.ReconciliationConflictException("Reconciliation audit is already in progress.");
+            }
+            acquiredByThisCall = true;
+        }
+        try {
+            return executeAuditScanAndPersist(triggerType);
+        } finally {
+            if (acquiredByThisCall) {
+                lastAuditFinishedAt.set(clock.instant());
+                auditLock.unlock();
+            }
+        }
+    }
+
+    private ReconciliationRunRecord executeAuditScanAndPersist(String triggerType) {
+        Instant startedAt = clock.instant();
         UUID runId = UUID.randomUUID();
         List<ReconciliationIssueRecord> issues = new ArrayList<>();
 
@@ -425,7 +498,7 @@ public class ReconciliationService {
             return null;
         });
 
-        Instant finishedAt = Instant.now();
+        Instant finishedAt = clock.instant();
         String runStatus = issues.isEmpty() ? "CLEAN" : "DISCREPANCIES_DETECTED";
         String summary = String.format("Scanned %d transfers, %d accounts; detected %d issues.",
                 report.totalTransfersChecked(), report.totalAccountsChecked(), issues.size());
@@ -462,10 +535,17 @@ public class ReconciliationService {
 
     @Scheduled(fixedDelayString = "${payrail.reconciliation.interval:60s}")
     public void scheduledAudit() {
+        if (!auditLock.tryLock()) {
+            log.info("Scheduled reconciliation skipped: an audit is already in progress.");
+            return;
+        }
         try {
             runAuditAndPersist("SCHEDULED");
         } catch (Exception e) {
             log.error("Scheduled reconciliation run failed: {}", e.getMessage(), e);
+        } finally {
+            lastAuditFinishedAt.set(clock.instant());
+            auditLock.unlock();
         }
     }
 

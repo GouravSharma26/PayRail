@@ -82,4 +82,12 @@ public class JdbcReconciliationIssueRepository implements ReconciliationIssueRep
         MapSqlParameterSource params = new MapSqlParameterSource("status", status);
         return jdbcTemplate.query(sql, params, ROW_MAPPER);
     }
+
+    @Override
+    public long countByStatus(String status) {
+        String sql = "SELECT COUNT(*) FROM reconciliation_issues WHERE status = :status";
+        MapSqlParameterSource params = new MapSqlParameterSource("status", status);
+        Long count = jdbcTemplate.queryForObject(sql, params, Long.class);
+        return count != null ? count : 0L;
+    }
 }

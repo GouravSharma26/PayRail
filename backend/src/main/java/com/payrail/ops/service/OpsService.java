@@ -81,7 +81,7 @@ public class OpsService {
 
     public ReconciliationRunRecord triggerReconciliation() {
         log.info("Operational manual trigger of reconciliation audit initiated");
-        return reconciliationService.runAuditAndPersist("MANUAL_API_TRIGGER");
+        return reconciliationService.triggerManualAudit();
     }
 
     @Transactional(readOnly = true)
@@ -143,34 +143,50 @@ public class OpsService {
         }
 
         // 3. Outbox backlog
-        long outboxBacklog = 0L;
-        try {
-            Long count = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM outbox_events WHERE published_at IS NULL", Long.class);
-            outboxBacklog = count != null ? count : 0L;
-        } catch (Exception e) {
-            log.warn("Failed to query outbox backlog for health summary: {}", e.getMessage());
-        }
-
-        // 4. Last reconciliation run and open issues
-        String lastReconStatus = "NONE";
-        Instant lastReconTime = null;
-        long openIssues = 0L;
-
-        if (runRepository != null) {
-            List<ReconciliationRunRecord> recent = runRepository.findRecent(1);
-            if (!recent.isEmpty()) {
-                ReconciliationRunRecord latest = recent.get(0);
-                lastReconStatus = latest.status();
-                lastReconTime = latest.finishedAt();
+        Long outboxBacklog = null;
+        if ("UP".equals(dbStatus)) {
+            try {
+                Long count = jdbcTemplate.queryForObject(
+                        "SELECT COUNT(*) FROM outbox_events WHERE published_at IS NULL", Long.class);
+                outboxBacklog = count != null ? count : 0L;
+            } catch (Exception e) {
+                log.warn("Failed to query outbox backlog for health summary: {}", e.getMessage());
             }
         }
 
-        if (issueRepository != null) {
-            try {
-                openIssues = issueRepository.findByStatus("OPEN").size();
-            } catch (Exception e) {
-                log.warn("Failed to query open reconciliation issues: {}", e.getMessage());
+        // 4. Last reconciliation run and open issues
+        String lastReconStatus = "UNKNOWN";
+        Instant lastReconTime = null;
+        Long openIssues = null;
+
+        if ("UP".equals(dbStatus)) {
+            if (runRepository != null) {
+                try {
+                    List<ReconciliationRunRecord> recent = runRepository.findRecent(1);
+                    if (!recent.isEmpty()) {
+                        ReconciliationRunRecord latest = recent.get(0);
+                        lastReconStatus = latest.status();
+                        lastReconTime = latest.finishedAt();
+                    } else {
+                        lastReconStatus = "NONE";
+                    }
+                } catch (Exception e) {
+                    log.warn("Failed to query recent reconciliation runs: {}", e.getMessage());
+                    lastReconStatus = "UNKNOWN";
+                }
+            } else {
+                lastReconStatus = "NONE";
+            }
+
+            if (issueRepository != null) {
+                try {
+                    openIssues = issueRepository.countByStatus("OPEN");
+                } catch (Exception e) {
+                    log.warn("Failed to query open reconciliation issues count: {}", e.getMessage());
+                    openIssues = null;
+                }
+            } else {
+                openIssues = 0L;
             }
         }
 
@@ -178,7 +194,13 @@ public class OpsService {
         String overallStatus = "UP";
         if ("DOWN".equals(dbStatus) || "DOWN".equals(kafkaStatus)) {
             overallStatus = "DOWN";
-        } else if ("DISCREPANCIES_DETECTED".equals(lastReconStatus) || openIssues > 0 || outboxBacklog > 500) {
+        } else if ("UNKNOWN".equals(lastReconStatus)
+                || openIssues == null
+                || outboxBacklog == null
+                || openIssues > 0
+                || outboxBacklog > 500
+                || "DISCREPANCIES_DETECTED".equals(lastReconStatus)
+                || "UNKNOWN".equals(kafkaStatus)) {
             overallStatus = "DEGRADED";
         }
 

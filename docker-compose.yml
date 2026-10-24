@@ -64,6 +64,12 @@ services:
       SPRING_KAFKA_BOOTSTRAP_SERVERS: broker:29092
       SPRING_PROFILES_ACTIVE: dev
       LOG_LEVEL_COM_PAYRAIL: INFO
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/actuator/health/liveness || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 25s
     depends_on:
       postgres:
         condition: service_healthy

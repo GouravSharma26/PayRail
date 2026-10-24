@@ -181,6 +181,9 @@ Response: `200 OK` with run record and issue list, or `404 Not Found`.
 
 ### `POST /ops/reconciliation/trigger`
 Triggers an immediate audit scan across ledger double-entry balance, account projection consistency, currency validation, stale outbox backlog, and retry-exhausted transfers. Durably records findings and returns the run record (`200 OK`).
+- `200 OK`: Reconciliation run record.
+- `409 Conflict`: `RECONCILIATION_ALREADY_RUNNING` when another audit is currently in flight.
+- `429 Too Many Requests`: `RECONCILIATION_COOLDOWN_ACTIVE` with `Retry-After` header when invoked during the active cooldown period (default 5s).
 
 ### `GET /ops/outbox/status`
 Returns outbox publisher queue backlog telemetry:
@@ -196,7 +199,7 @@ Returns outbox publisher queue backlog telemetry:
 ```
 
 ### `GET /ops/health/summary`
-Combined operational diagnostic status:
+Combined operational diagnostic status. If an individual component or query cannot be executed, it accurately reports `DOWN` or `UNKNOWN`, and counts will be `null` rather than silently representing unavailable data as zero:
 ```json
 {
   "status": "UP",

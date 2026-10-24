@@ -46,4 +46,18 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate Compose configuration
-        run: docker compose config
+        run: docker compose --profile all config
+
+  docker-build:
+    name: Build Backend Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: docker build -f backend/Dockerfile -t payrail-backend:ci .
+

@@ -118,26 +118,41 @@ public class PayRailMetrics {
                 .register(registry);
     }
 
+    private void executeAfterCommit(Runnable action) {
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            action.run();
+                        }
+                    }
+            );
+        } else {
+            action.run();
+        }
+    }
+
     // --- Transfer submission ---
     public void recordTransferSubmitted() {
-        transfersSubmitted.increment();
+        executeAfterCommit(transfersSubmitted::increment);
     }
 
     public void recordIdempotentReplay() {
-        transfersIdempotentReplay.increment();
+        executeAfterCommit(transfersIdempotentReplay::increment);
     }
 
     // --- Transfer processing outcomes ---
     public void recordTransferSucceeded() {
-        transfersSucceeded.increment();
+        executeAfterCommit(transfersSucceeded::increment);
     }
 
     public void recordTransferFailed() {
-        transfersFailed.increment();
+        executeAfterCommit(transfersFailed::increment);
     }
 
     public void recordTransferBusinessDeclined() {
-        transfersBusinessDeclined.increment();
+        executeAfterCommit(transfersBusinessDeclined::increment);
     }
 
     public Timer.Sample startProcessingTimer() {
@@ -158,11 +173,11 @@ public class PayRailMetrics {
     }
 
     public void recordConsumerEventRetried() {
-        consumerEventsRetried.increment();
+        executeAfterCommit(consumerEventsRetried::increment);
     }
 
     public void recordConsumerEventDlq() {
-        consumerEventsDlq.increment();
+        executeAfterCommit(consumerEventsDlq::increment);
     }
 
     public void recordConsumerEventMalformed() {
@@ -197,10 +212,10 @@ public class PayRailMetrics {
 
     // --- Reconciliation ---
     public void recordReconciliationRunCompleted() {
-        reconciliationRunsCompleted.increment();
+        executeAfterCommit(reconciliationRunsCompleted::increment);
     }
 
     public void recordReconciliationIssuesDetected(int count) {
-        reconciliationIssuesDetected.increment(count);
+        executeAfterCommit(() -> reconciliationIssuesDetected.increment(count));
     }
 }

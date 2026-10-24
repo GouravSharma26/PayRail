@@ -35,9 +35,15 @@ class OpsControllerIntegrationTest extends BaseIntegrationTest {
         assertThat(response.getBody()).isNotNull().isEmpty();
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.payrail.ledger.service.ReconciliationService reconciliationService;
+
     @Test
     @DisplayName("POST /api/v1/ops/reconciliation/trigger executes audit and GET detail returns run and issues")
     void testTriggerReconciliationAndFetchRun() {
+        // Reset cooldown before test
+        reconciliationService.setLastAuditFinishedAt(Instant.EPOCH);
+
         // Trigger manual audit
         ResponseEntity<ReconciliationRunRecord> triggerResponse = restTemplate.postForEntity(
                 "/api/v1/ops/reconciliation/trigger",
@@ -75,6 +81,84 @@ class OpsControllerIntegrationTest extends BaseIntegrationTest {
         assertThat(listResponse.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(listResponse.getBody()).hasSize(1);
         assertThat(listResponse.getBody().get(0).id()).isEqualTo(run.id());
+    }
+
+    @Test
+    @DisplayName("Immediate subsequent manual trigger is rejected with 429 and Retry-After header on cooldown")
+    void testTriggerReconciliationCooldownRejected() {
+        // Reset cooldown
+        reconciliationService.setLastAuditFinishedAt(Instant.EPOCH);
+
+        // 1. First trigger succeeds
+        ResponseEntity<ReconciliationRunRecord> first = restTemplate.postForEntity(
+                "/api/v1/ops/reconciliation/trigger",
+                null,
+                ReconciliationRunRecord.class
+        );
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        // 2. Immediate second trigger fails with 429
+        ResponseEntity<com.payrail.common.model.ErrorResponse> second = restTemplate.postForEntity(
+                "/api/v1/ops/reconciliation/trigger",
+                null,
+                com.payrail.common.model.ErrorResponse.class
+        );
+        assertThat(second.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(second.getBody()).isNotNull();
+        assertThat(second.getBody().code()).isEqualTo("RECONCILIATION_COOLDOWN_ACTIVE");
+        assertThat(second.getHeaders().getFirst("Retry-After")).isNotNull();
+
+        // 3. Resetting cooldown allows triggering again
+        reconciliationService.setLastAuditFinishedAt(Instant.EPOCH);
+        ResponseEntity<ReconciliationRunRecord> third = restTemplate.postForEntity(
+                "/api/v1/ops/reconciliation/trigger",
+                null,
+                ReconciliationRunRecord.class
+        );
+        assertThat(third.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    @DisplayName("Concurrent manual trigger requests are guarded against overlapping execution")
+    void testConcurrentTriggerSingleFlightGuard() throws Exception {
+        reconciliationService.setLastAuditFinishedAt(Instant.EPOCH);
+
+        int threads = 6;
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(threads);
+        java.util.concurrent.CountDownLatch readyLatch = new java.util.concurrent.CountDownLatch(threads);
+        java.util.concurrent.CountDownLatch startLatch = new java.util.concurrent.CountDownLatch(1);
+        java.util.List<java.util.concurrent.Future<Integer>> futures = new java.util.ArrayList<>();
+
+        for (int i = 0; i < threads; i++) {
+            futures.add(executor.submit(() -> {
+                readyLatch.countDown();
+                startLatch.await();
+                ResponseEntity<String> resp = restTemplate.postForEntity(
+                        "/api/v1/ops/reconciliation/trigger",
+                        null,
+                        String.class
+                );
+                return resp.getStatusCode().value();
+            }));
+        }
+
+        readyLatch.await();
+        startLatch.countDown();
+
+        int okCount = 0;
+        int conflictOrRateLimitCount = 0;
+        for (java.util.concurrent.Future<Integer> f : futures) {
+            int code = f.get();
+            if (code == 200) {
+                okCount++;
+            } else if (code == 409 || code == 429) {
+                conflictOrRateLimitCount++;
+            }
+        }
+        executor.shutdown();
+
+        assertThat(okCount).isEqualTo(1);
+        assertThat(conflictOrRateLimitCount).isEqualTo(threads - 1);
     }
 
     @Test

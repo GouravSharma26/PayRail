@@ -123,6 +123,20 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(body);
     }
 
+    @ExceptionHandler(com.payrail.common.exception.ReconciliationRateLimitException.class)
+    public ResponseEntity<ErrorResponse> handleReconciliationRateLimit(com.payrail.common.exception.ReconciliationRateLimitException ex) {
+        log.warn("Reconciliation rate limit [{}]: {}", ex.getErrorCode(), ex.getMessage());
+        ErrorResponse body = ErrorResponse.of(
+                ex.getHttpStatus().value(),
+                ex.getErrorCode(),
+                ex.getMessage(),
+                CorrelationIdFilter.getCurrentCorrelationId()
+        );
+        return ResponseEntity.status(ex.getHttpStatus())
+                .header("Retry-After", String.valueOf(ex.getRemainingSeconds()))
+                .body(body);
+    }
+
     @ExceptionHandler(PayRailException.class)
     public ResponseEntity<ErrorResponse> handlePayRailException(PayRailException ex) {
         log.warn("Domain exception [{}]: {}", ex.getErrorCode(), ex.getMessage());

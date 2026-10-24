@@ -1,6 +1,7 @@
 package com.payrail.config;
 
 import jakarta.validation.Valid;
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -99,9 +100,11 @@ public class PayRailProperties {
         private int batchSize = 50;
 
         @NotNull(message = "Outbox lease duration must not be null")
+        @PositiveDuration(message = "Outbox lease duration must be positive")
         private Duration leaseDuration = Duration.ofSeconds(10);
 
         @NotNull(message = "Outbox poll interval must not be null")
+        @PositiveDuration(message = "Outbox poll interval must be positive")
         private Duration pollInterval = Duration.ofMillis(500);
 
         @Positive(message = "Outbox max retries must be positive")
@@ -155,6 +158,7 @@ public class PayRailProperties {
         private boolean recoverySweepEnabled = true;
 
         @NotNull(message = "Processing lease duration must not be null")
+        @PositiveDuration(message = "Processing lease duration must be positive")
         private Duration leaseDuration = Duration.ofSeconds(30);
 
         @Positive(message = "Processing max attempts must be positive")
@@ -162,13 +166,24 @@ public class PayRailProperties {
         private int maxAttempts = 5;
 
         @NotNull(message = "Processing initial backoff must not be null")
+        @PositiveDuration(message = "Processing initial backoff must be positive")
         private Duration initialBackoff = Duration.ofSeconds(1);
 
         @NotNull(message = "Processing max backoff must not be null")
+        @PositiveDuration(message = "Processing max backoff must be positive")
         private Duration maxBackoff = Duration.ofSeconds(60);
 
         @NotNull(message = "Recovery sweep interval must not be null")
+        @PositiveDuration(message = "Recovery sweep interval must be positive")
         private Duration recoverySweepInterval = Duration.ofSeconds(15);
+
+        @AssertTrue(message = "Processing max backoff must be greater than or equal to initial backoff")
+        public boolean isBackoffValid() {
+            if (initialBackoff == null || maxBackoff == null) {
+                return true;
+            }
+            return maxBackoff.compareTo(initialBackoff) >= 0;
+        }
 
         public boolean isManualEndpointEnabled() {
             return manualEndpointEnabled;
@@ -237,13 +252,20 @@ public class PayRailProperties {
 
     public static class ReconciliationProperties {
         @NotNull(message = "Reconciliation interval must not be null")
+        @PositiveDuration(message = "Reconciliation interval must be positive")
         private Duration interval = Duration.ofSeconds(60);
 
         @NotNull(message = "Stale processing threshold must not be null")
+        @PositiveDuration(message = "Stale processing threshold must be positive")
         private Duration staleProcessingThreshold = Duration.ofSeconds(60);
 
         @NotNull(message = "Stale outbox threshold must not be null")
+        @PositiveDuration(message = "Stale outbox threshold must be positive")
         private Duration staleOutboxThreshold = Duration.ofSeconds(30);
+
+        @NotNull(message = "Manual trigger cooldown must not be null")
+        @PositiveDuration(message = "Manual trigger cooldown must be positive")
+        private Duration manualTriggerCooldown = Duration.ofSeconds(5);
 
         public Duration getInterval() {
             return interval;
@@ -267,6 +289,14 @@ public class PayRailProperties {
 
         public void setStaleOutboxThreshold(Duration staleOutboxThreshold) {
             this.staleOutboxThreshold = staleOutboxThreshold;
+        }
+
+        public Duration getManualTriggerCooldown() {
+            return manualTriggerCooldown;
+        }
+
+        public void setManualTriggerCooldown(Duration manualTriggerCooldown) {
+            this.manualTriggerCooldown = manualTriggerCooldown;
         }
     }
 }
