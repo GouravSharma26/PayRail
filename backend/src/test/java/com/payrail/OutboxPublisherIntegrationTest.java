@@ -29,6 +29,7 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -44,6 +45,12 @@ class OutboxPublisherIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private com.payrail.ledger.service.ReconciliationService reconciliationService;
+
+    @Autowired
+    private com.payrail.reconciliation.repository.ReconciliationIssueRepository issueRepository;
 
     @Value("${payrail.topics.transfer-commands:payrail.transfer-commands.v1}")
     private String transferCommandsTopic;
@@ -85,6 +92,7 @@ class OutboxPublisherIntegrationTest extends BaseIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        outboxPublisherService.setCrashInjector(null);
         if (testConsumer != null) {
             testConsumer.close();
         }
@@ -155,5 +163,206 @@ class OutboxPublisherIntegrationTest extends BaseIntegrationTest {
         assertThat(envelope.aggregateType()).isEqualTo("transfer");
         assertThat(envelope.aggregateId()).isEqualTo(transferId);
         assertThat(envelope.payload().get("transferId").asText()).isEqualTo(transferId.toString());
+    }
+
+    @Test
+    @DisplayName("Finding 2: Outbox retries stop at configured limit, mark PUBLISH_RETRY_EXHAUSTED, exclude from automatic claims, and flag in reconciliation")
+    void shouldExhaustRetriesAtConfiguredLimitWhenBrokerFailsPermanently() throws Exception {
+        String idempotencyKey = "key-exhaust-pub-" + UUID.randomUUID();
+        CreateTransferRequest request = new CreateTransferRequest(accountAId, accountBId, "50.00", "INR");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+        headers.set("X-Correlation-Id", UUID.randomUUID().toString());
+
+        ResponseEntity<TransferResponse> response = restTemplate.exchange(
+                "/api/v1/transfers",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                TransferResponse.class
+        );
+
+        UUID transferId = response.getBody().id();
+
+        OutboxEventRecord initialOutbox = outboxRepository.findUnpublished(java.time.Instant.now())
+                .stream()
+                .filter(e -> e.aggregateId().equals(transferId))
+                .findFirst()
+                .orElseThrow();
+
+        // 1. Configure crash injector to simulate permanent broker outage on send
+        outboxPublisherService.setCrashInjector(new com.payrail.outbox.service.OutboxPublisherCrashInjector() {
+            @Override
+            public void afterBrokerAckBeforeDbUpdate(OutboxEventRecord event) {}
+
+            @Override
+            public void beforeBrokerSend(OutboxEventRecord event) {
+                if (event.eventId().equals(initialOutbox.eventId())) {
+                    throw new RuntimeException("Simulated persistent Kafka broker connection failure");
+                }
+            }
+        });
+
+        // 2. Execute attempts 1 through 5 (configured maxRetries is 5)
+        for (int attempt = 1; attempt <= 5; attempt++) {
+            // Make event immediately available for each attempt
+            jdbcTemplate.update("UPDATE outbox_events SET available_at = now() - INTERVAL '1 second', lease_until = NULL WHERE event_id = ?", initialOutbox.eventId());
+            outboxPublisherService.publishDueEvents();
+        }
+
+        // 3. Inspect event state at exact limit (5 attempts)
+        OutboxEventRecord exhaustedEvent = outboxRepository.findById(initialOutbox.eventId()).orElseThrow();
+        assertThat(exhaustedEvent.publishedAt()).isNull();
+        assertThat(exhaustedEvent.publishAttempts()).isEqualTo(5);
+        assertThat(exhaustedEvent.lastErrorCode()).isEqualTo("PUBLISH_RETRY_EXHAUSTED");
+        assertThat(exhaustedEvent.lastErrorMessage()).contains("Max publish attempts reached (5)");
+        assertThat(exhaustedEvent.leaseToken()).isNull();
+        assertThat(exhaustedEvent.leaseUntil()).isNull();
+
+        // 4. Verify attempts stop: automatic retry poller skips exhausted event even if available_at is in the past
+        jdbcTemplate.update("UPDATE outbox_events SET available_at = now() - INTERVAL '1 second' WHERE event_id = ?", initialOutbox.eventId());
+        int attempt6Count = outboxPublisherService.publishDueEvents();
+        assertThat(attempt6Count).isEqualTo(0);
+
+        OutboxEventRecord stillExhausted = outboxRepository.findById(initialOutbox.eventId()).orElseThrow();
+        assertThat(stillExhausted.publishAttempts()).isEqualTo(5); // Did not increment to 6
+
+        // 5. Verify visible to reconciliation audit
+        com.payrail.reconciliation.domain.ReconciliationRunRecord run = reconciliationService.runAuditAndPersist("TEST_AUDIT");
+        assertThat(run.issueCount()).isGreaterThanOrEqualTo(1);
+
+        List<com.payrail.reconciliation.domain.ReconciliationIssueRecord> issues = issueRepository.findByRunId(run.id());
+        com.payrail.reconciliation.domain.ReconciliationIssueRecord matchedIssue = issues.stream()
+                .filter(i -> "OUTBOX_PUBLISH_EXHAUSTED".equals(i.issueType()) && initialOutbox.eventId().equals(i.outboxEventId()))
+                .findFirst()
+                .orElse(null);
+
+        assertThat(matchedIssue).isNotNull();
+        assertThat(matchedIssue.severity()).isEqualTo("CRITICAL");
+        assertThat(matchedIssue.status()).isEqualTo("OPEN");
+    }
+
+    @Test
+    @DisplayName("Finding 2: Recovers successfully before exhaustion when broker recovers on attempt 3")
+    void shouldRecoverBeforeExhaustionWhenBrokerRecovers() throws Exception {
+        String idempotencyKey = "key-recover-pub-" + UUID.randomUUID();
+        CreateTransferRequest request = new CreateTransferRequest(accountAId, accountBId, "60.00", "INR");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+        headers.set("X-Correlation-Id", UUID.randomUUID().toString());
+
+        ResponseEntity<TransferResponse> response = restTemplate.exchange(
+                "/api/v1/transfers",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                TransferResponse.class
+        );
+
+        UUID transferId = response.getBody().id();
+
+        OutboxEventRecord initialOutbox = outboxRepository.findUnpublished(java.time.Instant.now())
+                .stream()
+                .filter(e -> e.aggregateId().equals(transferId))
+                .findFirst()
+                .orElseThrow();
+
+        java.util.concurrent.atomic.AtomicInteger failureCount = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        // Fail first 2 attempts, then recover on attempt 3
+        outboxPublisherService.setCrashInjector(new com.payrail.outbox.service.OutboxPublisherCrashInjector() {
+            @Override
+            public void afterBrokerAckBeforeDbUpdate(OutboxEventRecord event) {}
+
+            @Override
+            public void beforeBrokerSend(OutboxEventRecord event) {
+                if (event.eventId().equals(initialOutbox.eventId()) && failureCount.getAndIncrement() < 2) {
+                    throw new RuntimeException("Transient broker outage on attempt " + failureCount.get());
+                }
+            }
+        });
+
+        // Attempt 1: Fails
+        outboxPublisherService.publishDueEvents();
+        OutboxEventRecord after1 = outboxRepository.findById(initialOutbox.eventId()).orElseThrow();
+        assertThat(after1.publishedAt()).isNull();
+        assertThat(after1.publishAttempts()).isEqualTo(1);
+        assertThat(after1.lastErrorCode()).isEqualTo("BROKER_PUBLISH_FAILED");
+
+        // Attempt 2: Fails
+        jdbcTemplate.update("UPDATE outbox_events SET available_at = now() - INTERVAL '1 second' WHERE event_id = ?", initialOutbox.eventId());
+        outboxPublisherService.publishDueEvents();
+        OutboxEventRecord after2 = outboxRepository.findById(initialOutbox.eventId()).orElseThrow();
+        assertThat(after2.publishedAt()).isNull();
+        assertThat(after2.publishAttempts()).isEqualTo(2);
+
+        // Attempt 3: Broker has recovered; succeeds!
+        jdbcTemplate.update("UPDATE outbox_events SET available_at = now() - INTERVAL '1 second' WHERE event_id = ?", initialOutbox.eventId());
+        int published = outboxPublisherService.publishDueEvents();
+        assertThat(published).isGreaterThanOrEqualTo(1);
+
+        OutboxEventRecord after3 = outboxRepository.findById(initialOutbox.eventId()).orElseThrow();
+        assertThat(after3.publishedAt()).isNotNull();
+        assertThat(after3.publishAttempts()).isEqualTo(3);
+        assertThat(after3.lastErrorCode()).isNull();
+    }
+
+    @Test
+    @DisplayName("Finding 2: Operator replay mechanism resets exhausted outbox event and allows successful publication")
+    void shouldAllowOperatorToReplayExhaustedEventAfterBrokerRecovers() throws Exception {
+        String idempotencyKey = "key-replay-pub-" + UUID.randomUUID();
+        CreateTransferRequest request = new CreateTransferRequest(accountAId, accountBId, "70.00", "INR");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+        headers.set("X-Correlation-Id", UUID.randomUUID().toString());
+
+        ResponseEntity<TransferResponse> response = restTemplate.exchange(
+                "/api/v1/transfers",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                TransferResponse.class
+        );
+
+        UUID transferId = response.getBody().id();
+
+        OutboxEventRecord initialOutbox = outboxRepository.findUnpublished(java.time.Instant.now())
+                .stream()
+                .filter(e -> e.aggregateId().equals(transferId))
+                .findFirst()
+                .orElseThrow();
+
+        // 1. Simulate exhausted state directly in DB
+        jdbcTemplate.update("""
+                UPDATE outbox_events
+                SET publish_attempts = 5,
+                    last_error_code = 'PUBLISH_RETRY_EXHAUSTED',
+                    last_error_message = 'Max publish attempts reached (5)',
+                    lease_token = NULL,
+                    lease_until = NULL
+                WHERE event_id = ?
+                """, initialOutbox.eventId());
+
+        // Verify it is excluded from claim
+        int countBeforeReplay = outboxPublisherService.publishDueEvents();
+        assertThat(countBeforeReplay).isEqualTo(0);
+
+        // 2. Operator performs controlled replay reset
+        boolean resetSuccess = outboxRepository.resetForReplay(initialOutbox.eventId(), java.time.Instant.now());
+        assertThat(resetSuccess).isTrue();
+
+        OutboxEventRecord replayedRecord = outboxRepository.findById(initialOutbox.eventId()).orElseThrow();
+        assertThat(replayedRecord.publishAttempts()).isEqualTo(0);
+        assertThat(replayedRecord.lastErrorCode()).isNull();
+        assertThat(replayedRecord.lastErrorMessage()).isNull();
+        assertThat(replayedRecord.publishedAt()).isNull();
+
+        // 3. Next publisher run successfully claims and publishes the event to broker
+        int publishedCount = outboxPublisherService.publishDueEvents();
+        assertThat(publishedCount).isGreaterThanOrEqualTo(1);
+
+        OutboxEventRecord finalPublished = outboxRepository.findById(initialOutbox.eventId()).orElseThrow();
+        assertThat(finalPublished.publishedAt()).isNotNull();
+        assertThat(finalPublished.publishAttempts()).isEqualTo(1);
     }
 }

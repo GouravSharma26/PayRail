@@ -98,6 +98,7 @@ public class JdbcOutboxRepository implements OutboxRepository {
                 WHERE published_at IS NULL
                   AND available_at <= :now
                   AND (lease_until IS NULL OR lease_until < :now)
+                  AND (last_error_code IS NULL OR last_error_code <> 'PUBLISH_RETRY_EXHAUSTED')
                 ORDER BY available_at ASC, created_at ASC
                 LIMIT :batchSize
                 FOR UPDATE SKIP LOCKED
@@ -241,5 +242,83 @@ public class JdbcOutboxRepository implements OutboxRepository {
         MapSqlParameterSource params = new MapSqlParameterSource("threshold", Timestamp.from(threshold));
         Long count = jdbcTemplate.queryForObject(sql, params, Long.class);
         return count != null ? count : 0L;
+    }
+
+    @Override
+    public boolean recordPublishExhausted(UUID eventId, UUID leaseToken, String errorCode, String errorMessage) {
+        String sql = """
+                UPDATE outbox_events
+                SET lease_token = NULL,
+                    lease_until = NULL,
+                    last_error_code = :errorCode,
+                    last_error_message = :errorMessage
+                WHERE event_id = :eventId
+                  AND lease_token = :leaseToken
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("errorCode", errorCode)
+                .addValue("errorMessage", errorMessage != null && errorMessage.length() > 300 ? errorMessage.substring(0, 300) : errorMessage)
+                .addValue("eventId", eventId)
+                .addValue("leaseToken", leaseToken);
+
+        return jdbcTemplate.update(sql, params) > 0;
+    }
+
+    @Override
+    public long getNextAggregateSequence(String aggregateType, UUID aggregateId) {
+        String sql = """
+                SELECT COALESCE(MAX(aggregate_sequence), 0) + 1
+                FROM outbox_events
+                WHERE aggregate_type = :aggregateType
+                  AND aggregate_id = :aggregateId
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("aggregateType", aggregateType)
+                .addValue("aggregateId", aggregateId);
+
+        Long nextSeq = jdbcTemplate.queryForObject(sql, params, Long.class);
+        return nextSeq != null ? nextSeq : 1L;
+    }
+
+    @Override
+    public boolean resetForReplay(UUID eventId, Instant now) {
+        String sql = """
+                UPDATE outbox_events
+                SET last_error_code = NULL,
+                    last_error_message = NULL,
+                    publish_attempts = 0,
+                    available_at = :now,
+                    lease_token = NULL,
+                    lease_until = NULL
+                WHERE event_id = :eventId
+                  AND published_at IS NULL
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("eventId", eventId)
+                .addValue("now", Timestamp.from(now));
+
+        return jdbcTemplate.update(sql, params) > 0;
+    }
+
+    @Override
+    public boolean hasUnpublishedEvents(String aggregateType, UUID aggregateId) {
+        String sql = """
+                SELECT COUNT(*)
+                FROM outbox_events
+                WHERE aggregate_type = :aggregateType
+                  AND aggregate_id = :aggregateId
+                  AND published_at IS NULL
+                  AND (last_error_code IS NULL OR last_error_code <> 'PUBLISH_RETRY_EXHAUSTED')
+                """;
+
+        MapSqlParameterSource params = new MapSqlParameterSource()
+                .addValue("aggregateType", aggregateType)
+                .addValue("aggregateId", aggregateId);
+
+        Long count = jdbcTemplate.queryForObject(sql, params, Long.class);
+        return count != null && count > 0L;
     }
 }

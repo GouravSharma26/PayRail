@@ -126,6 +126,30 @@ Phase 3 establishes the asynchronous messaging backbone for PayRail. Transfers a
 6. **Persisted Reconciliation Auditing (`JdbcReconciliationRunRepository`):**
    - Phase 3 implements persistent storage for `reconciliation_runs` and `reconciliation_issues` in PostgreSQL, recording double-entry integrity, account balance projections, outbox backlog, stale leases, and retry exhaustion without performing silent auto-repairs.
 
+## ADR-014 — Phase 3 Review Remediation: Durable DLQ, Bounded Outbox Retries, Claim-Fenced Failure Handling, Non-Colliding Recovery Sequencing, and Consumer Error Propagation
+**Context:**
+Independent review of commit `e5c6460` identified five reliability and concurrency findings in Phase 3 failure-handling: (1) direct DLQ publishing inside database transactions could swallow broker timeouts and acknowledge bad messages; (2) outbox retries lacked bounded exhaustion and operator replay; (3) stale pending recovery reused sequence 1 colliding with original published outbox events and lacked concurrency safety; (4) worker failure handling lacked claim-token fencing; and (5) generic consumer exception handlers silently logged without re-throwing unhandled errors.
+
+**Decisions:**
+1. **Durable DLQ Delivery via Transactional Outbox:**
+   - Dead-letter records for malformed JSON, invalid envelopes, unsupported schema versions, missing transfers, and exhausted retries are recorded as outbox events (`event_type = 'transfer.dlq'`) in PostgreSQL within the active database transaction.
+   - The leased outbox publisher delivers DLQ records asynchronously outside DB transactions to `payrail.transfer-commands.dlq.v1` with broker acknowledgment. Direct broker publishing inside transactions is completely eliminated.
+2. **Bounded Outbox Retries and Controlled Replay:**
+   - `OutboxPublisherService` enforces configured `maxRetries` (5). When attempts reach `maxRetries`, the event is transitioned to `PUBLISH_RETRY_EXHAUSTED` with error code and attempt count persisted.
+   - Exhausted events are excluded from automatic `claimDueEvents` sweeps and flagged as `CRITICAL` issues in continuous reconciliation (`OUTBOX_PUBLISH_EXHAUSTED`).
+   - Operator recovery is supported via `outboxRepository.resetForReplay(eventId, now)`, resetting `publish_attempts = 0` and clearing error codes for controlled replay.
+3. **Transactional, Non-Colliding Stale PENDING Recovery:**
+   - `ProcessingRecoveryService.sweepStalePendingTransfers()` locks each candidate transfer `FOR UPDATE`, confirms it is still `PENDING`, and checks `hasUnpublishedEvents()`.
+   - Aggregate sequences are dynamically allocated using `getNextAggregateSequence("transfer", transferId)` (`COALESCE(MAX(aggregate_sequence), 0) + 1`), preventing collisions with previously published original events.
+   - Recovery candidates are isolated in independent transactions: an individual failure or concurrent worker claim skips gracefully without aborting recovery of other pending transfers.
+4. **Fenced Worker Failure Handling with Claim Ownership:**
+   - `AsyncTransferProcessor.handleTechnicalFailure` and `handleBusinessDecline` accept `claimToken` and lock the transfer row `FOR UPDATE`.
+   - The handler confirms `status == PROCESSING` and `claimToken` matches the active claim before resetting status or enqueueing retry/DLQ work.
+   - Terminal guards ensure that if another worker already committed `SUCCEEDED` or `FAILED`, the stale worker halts without modifying transfer state, ledger entries, or attempt records.
+5. **No Silent Acknowledgments on Consumer Failures:**
+   - Unhandled processing exceptions in `TransferCommandConsumer.onMessage` are re-thrown (`throw e;`) to the Spring Kafka listener container.
+   - Configured `CommonErrorHandler` (`DefaultErrorHandler` with `FixedBackOff(250L, 2L)`) handles transient retries; source records are never silently acknowledged when durable claim or retry-state commits fail.
+
 ## Exact version record (verified 2026-10-24)
 
 | Component | Pinned version/tag | Compatibility verified against | Official source | Date |

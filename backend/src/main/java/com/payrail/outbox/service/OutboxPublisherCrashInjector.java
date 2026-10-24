@@ -10,6 +10,8 @@ public interface OutboxPublisherCrashInjector {
 
     void afterBrokerAckBeforeDbUpdate(OutboxEventRecord event);
 
+    default void beforeBrokerSend(OutboxEventRecord event) {}
+
     static OutboxPublisherCrashInjector noop() {
         return event -> {};
     }

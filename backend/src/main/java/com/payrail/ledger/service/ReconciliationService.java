@@ -373,6 +373,33 @@ public class ReconciliationService {
             return null;
         });
 
+        // 3b. Check for outbox events that exhausted publish retries
+        String outboxExhaustedSql = """
+                SELECT event_id, aggregate_id, publish_attempts, last_error_message
+                FROM outbox_events
+                WHERE published_at IS NULL
+                  AND last_error_code = 'PUBLISH_RETRY_EXHAUSTED'
+                """;
+        jdbcTemplate.query(outboxExhaustedSql, new MapSqlParameterSource(), (rs, rowNum) -> {
+            issues.add(new ReconciliationIssueRecord(
+                    UUID.randomUUID(),
+                    runId,
+                    "OUTBOX_PUBLISH_EXHAUSTED",
+                    "CRITICAL",
+                    null,
+                    rs.getObject("aggregate_id", UUID.class),
+                    rs.getObject("event_id", UUID.class),
+                    startedAt,
+                    safeJson(Map.of(
+                            "publishAttempts", rs.getInt("publish_attempts"),
+                            "error", rs.getString("last_error_message") != null ? rs.getString("last_error_message") : "Exhausted"
+                    )),
+                    "OPEN",
+                    null
+            ));
+            return null;
+        });
+
         // 4. Check for exhausted retry transfers
         String exhaustedSql = "SELECT id, failure_code, failure_message FROM transfers WHERE failure_code = 'RETRY_EXHAUSTED'";
         jdbcTemplate.query(exhaustedSql, new MapSqlParameterSource(), (rs, rowNum) -> {

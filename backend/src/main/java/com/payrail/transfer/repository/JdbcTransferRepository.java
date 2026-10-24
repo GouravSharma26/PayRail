@@ -279,6 +279,7 @@ public class JdbcTransferRepository implements TransferRepository {
                       WHERE o.aggregate_type = 'transfer'
                         AND o.aggregate_id = t.id
                         AND o.published_at IS NULL
+                        AND (o.last_error_code IS NULL OR o.last_error_code <> 'PUBLISH_RETRY_EXHAUSTED')
                   )
                 ORDER BY t.created_at ASC
                 """;

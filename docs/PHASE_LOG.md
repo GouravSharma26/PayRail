@@ -313,6 +313,49 @@
 - **Known limitations:** None for Phase 3.
 - **Reviewer notes / follow-up:** Phase 3 complete. All gate criteria verified. Waiting at Phase 3 gate for approval.
 
+### 2026-10-24 — Phase 3: Review Remediation
+
+- **Commit:** `85cb648`
+- **Scope:** Technical review remediation addressing Findings 1–5 and test fidelity: durable DLQ delivery via transactional outbox, bounded outbox retries with inspectable exhaustion state, transactional non-colliding stale PENDING recovery sequencing and concurrency protection, claim-fenced worker failure handling, propagation of unhandled consumer exceptions without silent acknowledgments, and accurate publisher crash lease-intact recovery test.
+- **Files changed:**
+  - `backend/src/main/java/com/payrail/consumer/service/DeadLetterPublisher.java` (stores DLQ work durably in PostgreSQL `outbox_events` with `event_type = 'transfer.dlq'` within caller's DB transaction; eliminates direct broker publishing in DB transactions)
+  - `backend/src/main/java/com/payrail/outbox/repository/OutboxRepository.java` & `JdbcOutboxRepository.java` (added `recordPublishExhausted`, `getNextAggregateSequence`, `resetForReplay`, `hasUnpublishedEvents`; updated `claimDueEvents` to exclude exhausted events)
+  - `backend/src/main/java/com/payrail/outbox/service/OutboxPublisherService.java` (routes `transfer.dlq` events to `payrail.transfer-commands.dlq.v1`, enforces `publishAttempts >= maxRetries` -> `recordPublishExhausted`, added `beforeBrokerSend` hook, handled `PublisherProcessHaltException` preserving intact lease in DB)
+  - `backend/src/main/java/com/payrail/outbox/service/PublisherProcessHaltException.java` (new ungraceful halt exception bypassing error recording in DB)
+  - `backend/src/main/java/com/payrail/consumer/service/AsyncTransferProcessor.java` (fences `handleTechnicalFailure` and `handleBusinessDecline` with `claimToken` under row lock `FOR UPDATE`; guards terminal states `SUCCEEDED`/`FAILED`; added hooks for failure injection)
+  - `backend/src/main/java/com/payrail/consumer/service/TransferCommandConsumer.java` (wraps DLQ recording in DB transactions, sets `processed_messages.outcome` to `"SCHEMA_UNSUPPORTED"`, re-throws unhandled exceptions to container)
+  - `backend/src/main/java/com/payrail/config/KafkaConfig.java` (configured Spring Kafka `CommonErrorHandler` with `DefaultErrorHandler(FixedBackOff(250L, 2L))`)
+  - `backend/src/main/java/com/payrail/consumer/service/ProcessingRecoveryService.java` (allocates `getNextAggregateSequence` preventing sequence collisions with published original events; locks transfers `FOR UPDATE`; isolates candidate processing)
+  - `backend/src/main/java/com/payrail/ledger/service/ReconciliationService.java` (detects `OUTBOX_PUBLISH_EXHAUSTED` issues with `CRITICAL` severity)
+  - `backend/src/main/java/com/payrail/transfer/repository/JdbcTransferRepository.java` (updated `findPendingWithoutOutbox` to check `last_error_code <> 'PUBLISH_RETRY_EXHAUSTED'`)
+  - `backend/src/test/java/com/payrail/MalformedEventDlqIntegrationTest.java` (added `shouldDeliverDlqRecordDurableAcrossBrokerOutage`)
+  - `backend/src/test/java/com/payrail/TransientRetryAndExhaustionIntegrationTest.java` (added `shouldDeliverDlqRecordDurableAcrossBrokerOutageForRetryExhaustedTransfer`)
+  - `backend/src/test/java/com/payrail/OutboxPublisherIntegrationTest.java` (added `shouldExhaustRetriesAtConfiguredLimitWhenBrokerFailsPermanently`, `shouldRecoverBeforeExhaustionWhenBrokerRecovers`, and `shouldAllowOperatorToReplayExhaustedEventAfterBrokerRecovers`)
+  - `backend/src/test/java/com/payrail/StaleLeaseRecoveryIntegrationTest.java` (added 5 tests verifying sequence 2 allocation after published seq 1, no-outbox transfer seq 1, concurrent sweeper races, consumer claiming during sweep, and conflict isolation)
+  - `backend/src/test/java/com/payrail/AsyncTransferProcessorFencingIntegrationTest.java` (new integration test verifying stale worker failure handling resumes after `SUCCEEDED`, after permanent business decline `FAILED`, and after claim replacement by newer worker)
+  - `backend/src/test/java/com/payrail/TransferCommandConsumerErrorPropagationIntegrationTest.java` (new integration test verifying exception propagation when DB fails before claim and when failure occurs in retry-state transaction)
+  - `backend/src/test/java/com/payrail/PublisherCrashRecoveryIntegrationTest.java` (added `shouldPreserveLeaseAndRecoverAfterExpiryOnPublisherCrash` testing intact lease before expiry, republication, and consumer deduplication)
+  - `docs/EVENTING_AND_FAILURES.md` (updated failure recovery matrix and sections 4, 5, 7, 8, 9, 10)
+  - `docs/MODEL_AND_TECH_DECISIONS.md` (recorded ADR-014)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (updated Phase 3 checklist items)
+  - `docs/PHASE_LOG.md` (recorded remediation evidence)
+- **Design decision(s):**
+  - ADR-014: Durable DLQ delivery via transactional outbox (`event_type = 'transfer.dlq'`) eliminates direct broker publishing inside database transactions. Bounded outbox retries at `maxRetries` (5) mark `PUBLISH_RETRY_EXHAUSTED`, exclude from auto-claims, flag in reconciliation, and support operator replay. Stale pending recovery dynamically allocates `MAX(seq) + 1` preventing sequence collisions, locks transfers `FOR UPDATE`, and isolates candidates. Worker failure handling checks `claimToken` and `status == PROCESSING` under row lock `FOR UPDATE`. Unhandled consumer exceptions re-thrown to Spring Kafka `CommonErrorHandler`.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 116 tests run, 0 failures, 0 errors, 0 skipped in 30.948s
+  - `.\mvnw.cmd -B verify` — PASS, 116 tests run, 0 failures, 0 errors, 0 skipped in 32.197s; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+- **Test results:** unit `33 passed / 0 failed`; integration `83 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (116 total tests passing).
+- **Acceptance criteria verified:**
+  - Finding 1: DLQ records are durable in PostgreSQL during broker outages; delivered upon broker recovery without swallowed timeouts or lost messages.
+  - Finding 2: Outbox retries stop exactly at configured limit (5 attempts), persist `PUBLISH_RETRY_EXHAUSTED`, exclude from auto-claims, flag in reconciliation, and support operator replay. Recovery before exhaustion succeeds.
+  - Finding 3: Stale PENDING recovery safely allocates non-colliding sequence 2 when sequence 1 is published; handles pending transfers with no outbox events; survives concurrent sweeper races and concurrent worker claiming; isolates individual candidate failures without aborting sweep.
+  - Finding 4: Stale worker failure handling is fenced by claim token and row lock: attempting failure handling after transfer has SUCCEEDED, after FAILED business decline, or after claim was replaced does not alter transfer status, overwrite newer attempts, or enqueue duplicate retries.
+  - Finding 5: Database failure before durable claim or inside retry-state transaction does not silently acknowledge message; re-throws to container error handler with bounded backoff.
+  - Publisher crash window: Process crash after broker ack leaves lease intact in PostgreSQL until lease expiry; reclaimed and republished without duplicate ledger effects.
+- **Not verified / blocked:** Phase 4 Operations and CI (Actuator metrics, health checks, Docker Compose multi-service verification, CI workflow enhancements; scheduled for Phase 4).
+- **Known limitations:** None for Phase 3.
+- **Reviewer notes / follow-up:** Phase 3 remediation complete. All gate criteria verified. Waiting at Phase 3 gate for independent review approval.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name

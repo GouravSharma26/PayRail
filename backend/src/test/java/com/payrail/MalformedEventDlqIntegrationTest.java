@@ -17,8 +17,10 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -31,6 +33,12 @@ class MalformedEventDlqIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private com.payrail.outbox.service.OutboxPublisherService outboxPublisherService;
+
+    @Autowired
+    private com.payrail.outbox.repository.OutboxRepository outboxRepository;
 
     @Value("${payrail.topics.transfer-commands:payrail.transfer-commands.v1}")
     private String transferCommandsTopic;
@@ -62,7 +70,7 @@ class MalformedEventDlqIntegrationTest extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("Malformed JSON should be routed to DLQ without crashing consumer")
+    @DisplayName("Malformed JSON should be recorded in outbox and published to DLQ")
     void shouldRouteMalformedJsonToDlq() throws Exception {
         String invalidJson = "{\"this is definitely not valid json";
 
@@ -74,8 +82,12 @@ class MalformedEventDlqIntegrationTest extends BaseIntegrationTest {
                 invalidJson
         );
 
-        // Process directly via consumer handler
+        // Process directly via consumer handler: durably records in outbox
         transferCommandConsumer.onMessage(record);
+
+        // Publish due outbox DLQ events
+        int published = outboxPublisherService.publishDueEvents();
+        assertThat(published).isGreaterThanOrEqualTo(1);
 
         // Verify DLQ received the malformed message
         ConsumerRecords<String, String> dlqRecords = dlqConsumer.poll(Duration.ofSeconds(10));
@@ -89,7 +101,7 @@ class MalformedEventDlqIntegrationTest extends BaseIntegrationTest {
     }
 
     @Test
-    @DisplayName("Unsupported schema version should be routed to DLQ")
+    @DisplayName("Unsupported schema version should be recorded in outbox and published to DLQ")
     void shouldRouteUnsupportedSchemaVersionToDlq() throws Exception {
         UUID eventId = UUID.randomUUID();
         UUID transferId = UUID.randomUUID();
@@ -118,6 +130,10 @@ class MalformedEventDlqIntegrationTest extends BaseIntegrationTest {
 
         transferCommandConsumer.onMessage(record);
 
+        // Publish due outbox DLQ events
+        int published = outboxPublisherService.publishDueEvents();
+        assertThat(published).isGreaterThanOrEqualTo(1);
+
         ConsumerRecords<String, String> dlqRecords = dlqConsumer.poll(Duration.ofSeconds(10));
         assertThat(dlqRecords.isEmpty()).isFalse();
 
@@ -132,5 +148,54 @@ class MalformedEventDlqIntegrationTest extends BaseIntegrationTest {
 
         assertThat(matchedEnvelope).isNotNull();
         assertThat(matchedEnvelope.failureCode()).isEqualTo("UNSUPPORTED_SCHEMA_VERSION");
+    }
+
+    @Test
+    @DisplayName("Finding 1: DLQ record is durable across broker outage and delivered upon broker recovery")
+    void shouldDeliverDlqRecordDurableAcrossBrokerOutage() throws Exception {
+        String invalidJson = "{\"corrupted_payload_during_outage\": true";
+
+        ConsumerRecord<String, String> record = new ConsumerRecord<>(
+                transferCommandsTopic,
+                0,
+                200L,
+                "key-outage-dlq",
+                invalidJson
+        );
+
+        // 1. Consumer receives message while DLQ broker is unavailable
+        transferCommandConsumer.onMessage(record);
+
+        // 2. Verify DLQ event is durably stored in outbox_events in PostgreSQL
+        List<com.payrail.outbox.domain.OutboxEventRecord> unpublished = outboxRepository.findUnpublished(Instant.now());
+        assertThat(unpublished).isNotEmpty();
+        com.payrail.outbox.domain.OutboxEventRecord dlqEvent = unpublished.stream()
+                .filter(e -> "transfer.dlq".equals(e.eventType()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(dlqEvent.publishedAt()).isNull();
+
+        // 3. Broker recovers: publish due outbox events
+        int published = outboxPublisherService.publishDueEvents();
+        assertThat(published).isGreaterThanOrEqualTo(1);
+
+        // 4. Verify DLQ event is now marked published in DB
+        com.payrail.outbox.domain.OutboxEventRecord updatedDlq = outboxRepository.findById(dlqEvent.eventId()).orElseThrow();
+        assertThat(updatedDlq.publishedAt()).isNotNull();
+
+        // 5. Verify message received from Kafka DLQ topic
+        ConsumerRecords<String, String> dlqRecords = dlqConsumer.poll(Duration.ofSeconds(10));
+        assertThat(dlqRecords.isEmpty()).isFalse();
+
+        DeadLetterEnvelope dlqEnvelope = null;
+        for (ConsumerRecord<String, String> r : dlqRecords) {
+            DeadLetterEnvelope env = objectMapper.readValue(r.value(), DeadLetterEnvelope.class);
+            if (invalidJson.equals(env.rawPayload())) {
+                dlqEnvelope = env;
+                break;
+            }
+        }
+        assertThat(dlqEnvelope).isNotNull();
+        assertThat(dlqEnvelope.failureCode()).isEqualTo("MALFORMED_EVENT");
     }
 }

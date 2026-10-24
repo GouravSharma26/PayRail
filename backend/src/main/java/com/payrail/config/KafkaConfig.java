@@ -30,4 +30,11 @@ public class KafkaConfig {
                 .replicas(1)
                 .build();
     }
+
+    @Bean
+    public org.springframework.kafka.listener.CommonErrorHandler kafkaListenerErrorHandler() {
+        return new org.springframework.kafka.listener.DefaultErrorHandler(
+                new org.springframework.util.backoff.FixedBackOff(250L, 2L)
+        );
+    }
 }

@@ -44,6 +44,9 @@ public class OutboxPublisherService {
     @Value("${payrail.topics.transfer-commands:payrail.transfer-commands.v1}")
     private String transferCommandsTopic;
 
+    @Value("${payrail.topics.transfer-commands-dlq:payrail.transfer-commands.dlq.v1}")
+    private String dlqTopic;
+
     @Value("${payrail.outbox.max-retries:5}")
     private int maxRetries;
 
@@ -90,37 +93,55 @@ public class OutboxPublisherService {
         int publishedCount = 0;
 
         for (OutboxEventRecord event : claimedEvents) {
-            boolean success = publishSingleEvent(event, leaseToken);
-            if (success) {
-                publishedCount++;
+            try {
+                boolean success = publishSingleEvent(event, leaseToken);
+                if (success) {
+                    publishedCount++;
+                }
+            } catch (PublisherProcessHaltException e) {
+                log.warn("Process halt simulated on event id={}; aborting further publication in this execution", event.eventId());
+                break;
             }
         }
         return publishedCount;
     }
 
-    private boolean publishSingleEvent(OutboxEventRecord event, UUID leaseToken) {
-        String eventKey = event.aggregateId().toString();
-        try {
-            JsonNode payloadNode = objectMapper.readTree(event.payloadJson());
-            EventEnvelope envelope = new EventEnvelope(
-                    event.eventId(),
-                    event.eventType(),
-                    event.schemaVersion(),
-                    event.createdAt(),
-                    event.aggregateType(),
-                    event.aggregateId(),
-                    event.aggregateSequence(),
-                    event.correlationId(),
-                    payloadNode
-            );
+    private boolean isDlqEvent(String eventType) {
+        return eventType != null && (eventType.equals("transfer.dlq") || eventType.endsWith(".dlq") || eventType.equalsIgnoreCase("dlq"));
+    }
 
-            String envelopeJson = objectMapper.writeValueAsString(envelope);
+    private boolean publishSingleEvent(OutboxEventRecord event, UUID leaseToken) {
+        String eventKey = event.aggregateId() != null ? event.aggregateId().toString() : event.eventId().toString();
+        try {
+            // Test fault-injection point: simulate broker send failure
+            crashInjector.beforeBrokerSend(event);
+
+            String targetTopic = isDlqEvent(event.eventType()) ? dlqTopic : transferCommandsTopic;
+            String messagePayload;
+
+            if (isDlqEvent(event.eventType())) {
+                messagePayload = event.payloadJson();
+            } else {
+                JsonNode payloadNode = objectMapper.readTree(event.payloadJson());
+                EventEnvelope envelope = new EventEnvelope(
+                        event.eventId(),
+                        event.eventType(),
+                        event.schemaVersion(),
+                        event.createdAt(),
+                        event.aggregateType(),
+                        event.aggregateId(),
+                        event.aggregateSequence(),
+                        event.correlationId(),
+                        payloadNode
+                );
+                messagePayload = objectMapper.writeValueAsString(envelope);
+            }
 
             // Publish to Kafka outside DB transaction
             CompletableFuture<SendResult<String, String>> future = kafkaTemplate.send(
-                    transferCommandsTopic,
+                    targetTopic,
                     eventKey,
-                    envelopeJson
+                    messagePayload
             );
 
             // Wait for broker acknowledgment with timeout
@@ -141,18 +162,32 @@ public class OutboxPublisherService {
             }
             return marked;
 
+        } catch (PublisherProcessHaltException e) {
+            // Re-throw process halt so DB state and active lease remain intact as at crash instant
+            throw e;
         } catch (Exception e) {
-            log.error("Failed to publish outbox event id={} [aggregateId={}]: {}",
-                    event.eventId(), event.aggregateId(), e.getMessage());
+            log.error("Failed to publish outbox event id={} [aggregateId={}, attempts={}]: {}",
+                    event.eventId(), event.aggregateId(), event.publishAttempts(), e.getMessage());
 
-            Instant nextAvailableAt = calculateBackoff(event.publishAttempts());
-            outboxRepository.recordPublishFailure(
-                    event.eventId(),
-                    leaseToken,
-                    "BROKER_PUBLISH_FAILED",
-                    e.getMessage(),
-                    nextAvailableAt
-            );
+            if (event.publishAttempts() >= maxRetries) {
+                log.warn("Outbox event id={} reached max retries ({}); marking as PUBLISH_RETRY_EXHAUSTED",
+                        event.eventId(), maxRetries);
+                outboxRepository.recordPublishExhausted(
+                        event.eventId(),
+                        leaseToken,
+                        "PUBLISH_RETRY_EXHAUSTED",
+                        "Max publish attempts reached (" + maxRetries + "): " + e.getMessage()
+                );
+            } else {
+                Instant nextAvailableAt = calculateBackoff(event.publishAttempts());
+                outboxRepository.recordPublishFailure(
+                        event.eventId(),
+                        leaseToken,
+                        "BROKER_PUBLISH_FAILED",
+                        e.getMessage(),
+                        nextAvailableAt
+                );
+            }
             return false;
         }
     }

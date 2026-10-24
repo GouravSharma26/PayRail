@@ -134,37 +134,42 @@ public class AsyncTransferProcessor {
             transferId = UUID.fromString(envelope.payload().get("transferId").asText());
         } catch (Exception e) {
             log.error("Event id={} missing valid transferId in payload: {}", eventId, envelope.payload());
-            deadLetterPublisher.publish(new DeadLetterEnvelope(
-                    transferCommandsTopic,
-                    eventId,
-                    null,
-                    "MALFORMED_PAYLOAD",
-                    "Event payload missing valid transferId: " + e.getMessage(),
-                    0,
-                    Instant.now(),
-                    envelope.payload().toString()
-            ));
-            processedMessagesRepository.insert(new ProcessedMessageRecord(CONSUMER_NAME, eventId, Instant.now(), "MALFORMED_PAYLOAD"));
+            transactionTemplate.executeWithoutResult(status -> {
+                deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
+                        transferCommandsTopic,
+                        eventId,
+                        null,
+                        "MALFORMED_PAYLOAD",
+                        "Event payload missing valid transferId: " + e.getMessage(),
+                        0,
+                        Instant.now(),
+                        envelope.payload().toString()
+                ));
+                processedMessagesRepository.insert(new ProcessedMessageRecord(CONSUMER_NAME, eventId, Instant.now(), "MALFORMED_PAYLOAD"));
+            });
             return;
         }
 
         // 2. Claim step (short transaction)
         UUID claimToken = UUID.randomUUID();
+        failureInjector.beforeClaim(transferId);
         ClaimResult claim = transactionTemplate.execute(status -> claimTransfer(transferId, claimToken, envelope));
 
         if (claim == null || claim.status() == ClaimStatus.NOT_FOUND) {
             log.error("Transfer id={} not found for event id={}", transferId, eventId);
-            deadLetterPublisher.publish(new DeadLetterEnvelope(
-                    transferCommandsTopic,
-                    eventId,
-                    transferId,
-                    "TRANSFER_NOT_FOUND",
-                    "Transfer record does not exist",
-                    0,
-                    Instant.now(),
-                    envelope.payload().toString()
-            ));
-            processedMessagesRepository.insert(new ProcessedMessageRecord(CONSUMER_NAME, eventId, Instant.now(), "TRANSFER_NOT_FOUND"));
+            transactionTemplate.executeWithoutResult(status -> {
+                deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
+                        transferCommandsTopic,
+                        eventId,
+                        transferId,
+                        "TRANSFER_NOT_FOUND",
+                        "Transfer record does not exist",
+                        0,
+                        Instant.now(),
+                        envelope.payload().toString()
+                ));
+                processedMessagesRepository.insert(new ProcessedMessageRecord(CONSUMER_NAME, eventId, Instant.now(), "TRANSFER_NOT_FOUND"));
+            });
             return;
         }
 
@@ -192,10 +197,11 @@ public class AsyncTransferProcessor {
             log.error("Technical failure processing transfer id={} on attempt {}: {}",
                     transferId, claim.attemptNumber(), e.getMessage());
 
-            // 4. Recovery step on technical failure
-            transactionTemplate.executeWithoutResult(status ->
-                    handleTechnicalFailure(transferId, claim.attemptNumber(), envelope, e, startTime)
-            );
+            // 4. Recovery step on technical failure - fenced by claimToken inside transaction
+            transactionTemplate.executeWithoutResult(status -> {
+                failureInjector.inRetryStateTransaction(transferId, claim.attemptNumber());
+                handleTechnicalFailure(transferId, claimToken, claim.attemptNumber(), envelope, e, startTime);
+            });
         }
     }
 
@@ -289,23 +295,23 @@ public class AsyncTransferProcessor {
 
         // Validation: Account status
         if (srcAccount.status() != AccountStatus.ACTIVE) {
-            handleBusinessDecline(transfer, attemptNumber, envelope, "ACCOUNT_INACTIVE", "Source account is inactive", startTime, now);
+            handleBusinessDecline(transfer, claimToken, attemptNumber, envelope, "ACCOUNT_INACTIVE", "Source account is inactive", startTime, now);
             return;
         }
         if (dstAccount.status() != AccountStatus.ACTIVE) {
-            handleBusinessDecline(transfer, attemptNumber, envelope, "ACCOUNT_INACTIVE", "Destination account is inactive", startTime, now);
+            handleBusinessDecline(transfer, claimToken, attemptNumber, envelope, "ACCOUNT_INACTIVE", "Destination account is inactive", startTime, now);
             return;
         }
 
         // Validation: Currency match
         if (!srcAccount.currency().equals(transfer.currency()) || !dstAccount.currency().equals(transfer.currency())) {
-            handleBusinessDecline(transfer, attemptNumber, envelope, "CURRENCY_MISMATCH", "Transfer currency mismatch", startTime, now);
+            handleBusinessDecline(transfer, claimToken, attemptNumber, envelope, "CURRENCY_MISMATCH", "Transfer currency mismatch", startTime, now);
             return;
         }
 
         // Validation: Available balance
         if (srcAccount.currentBalance().compareTo(transfer.amount()) < 0) {
-            handleBusinessDecline(transfer, attemptNumber, envelope, "INSUFFICIENT_FUNDS", "Insufficient available balance", startTime, now);
+            handleBusinessDecline(transfer, claimToken, attemptNumber, envelope, "INSUFFICIENT_FUNDS", "Insufficient available balance", startTime, now);
             return;
         }
 
@@ -380,6 +386,7 @@ public class AsyncTransferProcessor {
 
     private void handleBusinessDecline(
             TransferRecord transfer,
+            UUID claimToken,
             int attemptNumber,
             EventEnvelope envelope,
             String errorCode,
@@ -387,6 +394,11 @@ public class AsyncTransferProcessor {
             Instant startTime,
             Instant now
     ) {
+        if (transfer.status() != TransferStatus.PROCESSING || !claimToken.equals(transfer.processingClaimToken())) {
+            log.warn("Transfer id={} claimToken={} is stale during business decline handling; aborting.", transfer.id(), claimToken);
+            return;
+        }
+
         transferRepository.completeProcessing(transfer.id(), TransferStatus.FAILED, errorCode, safeMessage, now, now);
 
         statusHistoryRepository.insert(new TransferStatusHistoryRecord(
@@ -421,8 +433,9 @@ public class AsyncTransferProcessor {
         log.warn("Permanent business decline on transfer id={} [code={}]", transfer.id(), errorCode);
     }
 
-    private void handleTechnicalFailure(
+    public void handleTechnicalFailure(
             UUID transferId,
+            UUID claimToken,
             int attemptNumber,
             EventEnvelope envelope,
             Exception cause,
@@ -431,6 +444,29 @@ public class AsyncTransferProcessor {
         Instant now = Instant.now();
         long durationMs = Duration.between(startTime, now).toMillis();
         String safeError = cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName();
+
+        // Finding 4: Lock transfer and verify claim ownership before modifying state
+        Optional<TransferRecord> transferOpt = transferRepository.findByIdForUpdate(transferId);
+        if (transferOpt.isEmpty()) {
+            log.warn("Transfer id={} disappeared during failure handling; aborting failure update.", transferId);
+            return;
+        }
+
+        TransferRecord transfer = transferOpt.get();
+
+        // Terminal-state guard: If transfer has already reached SUCCEEDED or FAILED, stale worker must do nothing
+        if (transfer.status() == TransferStatus.SUCCEEDED || transfer.status() == TransferStatus.FAILED) {
+            log.warn("Transfer id={} is already terminal ({}); stale worker with claimToken={} must not modify state.",
+                    transferId, transfer.status(), claimToken);
+            return;
+        }
+
+        // Fencing check: Claim token and PROCESSING status must match current claim
+        if (transfer.status() != TransferStatus.PROCESSING || !claimToken.equals(transfer.processingClaimToken())) {
+            log.warn("Worker claim token {} is stale on transfer id={} (current claim={}, status={}); ignoring failure handling.",
+                    claimToken, transferId, transfer.processingClaimToken(), transfer.status());
+            return;
+        }
 
         if (attemptNumber < maxAttempts) {
             // Schedule durable retry via outbox
@@ -470,11 +506,13 @@ public class AsyncTransferProcessor {
                 throw new IllegalStateException("Failed to serialize retry payload", e);
             }
 
+            long nextSeq = outboxRepository.getNextAggregateSequence("transfer", transferId);
+
             OutboxEventRecord retryOutboxEvent = new OutboxEventRecord(
                     UUID.randomUUID(),
                     "transfer",
                     transferId,
-                    attemptNumber + 1L,
+                    nextSeq,
                     "transfer.retry",
                     1,
                     retryPayload,
@@ -501,7 +539,7 @@ public class AsyncTransferProcessor {
                     transferId, attemptNumber + 1, retryAvailableAt);
 
         } else {
-            // Max attempts exhausted: set terminal FAILED and publish to DLQ
+            // Max attempts exhausted: set terminal FAILED and record DLQ in outbox in the same transaction
             transferRepository.completeProcessing(
                     transferId,
                     TransferStatus.FAILED,
@@ -539,7 +577,7 @@ public class AsyncTransferProcessor {
                     "EXHAUSTED"
             ));
 
-            deadLetterPublisher.publish(new DeadLetterEnvelope(
+            deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
                     transferCommandsTopic,
                     envelope.eventId(),
                     transferId,
@@ -550,7 +588,7 @@ public class AsyncTransferProcessor {
                     envelope.payload().toString()
             ));
 
-            log.warn("Transfer id={} exhausted max attempts ({}); marked FAILED and emitted to DLQ.", transferId, maxAttempts);
+            log.warn("Transfer id={} exhausted max attempts ({}); marked FAILED and recorded in DLQ outbox.", transferId, maxAttempts);
         }
     }
 

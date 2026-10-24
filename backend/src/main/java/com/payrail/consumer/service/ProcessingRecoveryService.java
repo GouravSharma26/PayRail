@@ -141,7 +141,7 @@ public class ProcessingRecoveryService {
                     now
             ));
 
-            deadLetterPublisher.publish(new DeadLetterEnvelope(
+            deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
                     transferCommandsTopic,
                     null,
                     transferId,
@@ -180,11 +180,13 @@ public class ProcessingRecoveryService {
                 throw new IllegalStateException("Failed to serialize recovery retry payload", e);
             }
 
+            long nextSeq = outboxRepository.getNextAggregateSequence("transfer", transferId);
+
             OutboxEventRecord recoveryEvent = new OutboxEventRecord(
                     UUID.randomUUID(),
                     "transfer",
                     transferId,
-                    transfer.processingAttemptCount() + 1L,
+                    nextSeq,
                     "transfer.recovery",
                     1,
                     retryPayload,
@@ -200,7 +202,7 @@ public class ProcessingRecoveryService {
             );
             outboxRepository.insert(recoveryEvent);
 
-            log.info("Recovered stale processing lease on transfer id={}; returned to PENDING and enqueued outbox recovery event.", transferId);
+            log.info("Recovered stale processing lease on transfer id={}; returned to PENDING and enqueued outbox recovery event seq={}.", transferId, nextSeq);
             return true;
         }
     }
@@ -223,43 +225,73 @@ public class ProcessingRecoveryService {
 
         int recovered = 0;
         for (TransferRecord pending : abandonedPending) {
-            Boolean result = transactionTemplate.execute(status -> {
-                Instant now = Instant.now();
-                String payload;
-                try {
-                    payload = objectMapper.writeValueAsString(Map.of("transferId", pending.id().toString()));
-                } catch (JsonProcessingException e) {
-                    throw new IllegalStateException("Failed to serialize recovery payload", e);
+            try {
+                Boolean result = transactionTemplate.execute(status -> recoverPendingTransfer(pending.id()));
+                if (Boolean.TRUE.equals(result)) {
+                    recovered++;
                 }
-
-                OutboxEventRecord recoveryEvent = new OutboxEventRecord(
-                        UUID.randomUUID(),
-                        "transfer",
-                        pending.id(),
-                        pending.processingAttemptCount() + 1L,
-                        "transfer.requested",
-                        1,
-                        payload,
-                        pending.correlationId(),
-                        now,
-                        now,
-                        null,
-                        0,
-                        null,
-                        null,
-                        null,
-                        null
-                );
-                outboxRepository.insert(recoveryEvent);
-                return true;
-            });
-            if (Boolean.TRUE.equals(result)) {
-                recovered++;
+            } catch (Exception e) {
+                log.error("Failed to recover pending transfer id={}: {}", pending.id(), e.getMessage(), e);
+                // Individual recovery failure does not abort remaining candidates
             }
         }
         if (recovered > 0) {
             log.info("Recovered {} abandoned pending transfer(s) by enqueuing outbox events", recovered);
         }
         return recovered;
+    }
+
+    private boolean recoverPendingTransfer(UUID transferId) {
+        Instant now = Instant.now();
+        // 1. Lock and re-read transfer
+        Optional<TransferRecord> transferOpt = transferRepository.findByIdForUpdate(transferId);
+        if (transferOpt.isEmpty()) {
+            return false;
+        }
+
+        TransferRecord transfer = transferOpt.get();
+        // 2. Confirm it is still PENDING
+        if (transfer.status() != TransferStatus.PENDING) {
+            return false;
+        }
+
+        // 3. Confirm it still needs recovery: no active or unpublished outbox event exists
+        if (outboxRepository.hasUnpublishedEvents("transfer", transferId)) {
+            return false;
+        }
+
+        // 4. Allocate aggregate sequence that cannot collide with existing events
+        long nextSeq = outboxRepository.getNextAggregateSequence("transfer", transferId);
+
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(Map.of("transferId", transferId.toString()));
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize recovery payload", e);
+        }
+
+        OutboxEventRecord recoveryEvent = new OutboxEventRecord(
+                UUID.randomUUID(),
+                "transfer",
+                transferId,
+                nextSeq,
+                "transfer.requested",
+                1,
+                payload,
+                transfer.correlationId(),
+                now,
+                now,
+                null,
+                0,
+                null,
+                null,
+                null,
+                null
+        );
+
+        outboxRepository.insert(recoveryEvent);
+        log.info("Enqueued recovery outbox event id={} seq={} for pending transfer id={}",
+                recoveryEvent.eventId(), nextSeq, transferId);
+        return true;
     }
 }

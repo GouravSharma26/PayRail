@@ -198,4 +198,93 @@ class PublisherCrashRecoveryIntegrationTest extends BaseIntegrationTest {
         assertThat(accA.currentBalance()).isEqualByComparingTo(new BigDecimal("700.00"));
         assertThat(accB.currentBalance()).isEqualByComparingTo(new BigDecimal("800.00"));
     }
+
+    @Test
+    @DisplayName("Test fidelity: Process crash after broker ack leaves lease intact until expiry; republished and deduplicated")
+    void shouldPreserveLeaseAndRecoverAfterExpiryOnPublisherCrash() throws Exception {
+        String idempotencyKey = "key-crash-lease-" + UUID.randomUUID();
+        CreateTransferRequest request = new CreateTransferRequest(accountAId, accountBId, "150.00", "INR");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+        headers.set("X-Correlation-Id", UUID.randomUUID().toString());
+
+        ResponseEntity<TransferResponse> response = restTemplate.exchange(
+                "/api/v1/transfers",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                TransferResponse.class
+        );
+
+        UUID transferId = response.getBody().id();
+
+        // 1. Configure crash injector to simulate JVM halt after broker ack before DB update
+        AtomicBoolean crashed = new AtomicBoolean(false);
+        outboxPublisherService.setCrashInjector(new com.payrail.outbox.service.OutboxPublisherCrashInjector() {
+            @Override
+            public void afterBrokerAckBeforeDbUpdate(OutboxEventRecord event) {
+                if (crashed.compareAndSet(false, true)) {
+                    throw new com.payrail.outbox.service.PublisherProcessHaltException("Simulated JVM crash after broker ack before marking published in DB");
+                }
+            }
+        });
+
+        // 2. Publisher A claims event and publishes, then crashes
+        outboxPublisherService.publishDueEvents();
+        assertThat(crashed.get()).isTrue();
+
+        // 3. Verify event remains UNPUBLISHED and its LEASE IS INTACT in DB
+        OutboxEventRecord unpub = outboxRepository.findById(
+                outboxRepository.findUnpublished(java.time.Instant.now())
+                        .stream()
+                        .filter(e -> e.aggregateId().equals(transferId))
+                        .findFirst()
+                        .orElseThrow()
+                        .eventId()
+        ).orElseThrow();
+
+        assertThat(unpub.publishedAt()).isNull();
+        assertThat(unpub.leaseToken()).isNotNull();
+        assertThat(unpub.leaseUntil()).isNotNull();
+        assertThat(unpub.leaseUntil()).isAfter(java.time.Instant.now().minusSeconds(1));
+
+        // While lease is intact and active, another publisher cannot claim it
+        int immediateAttempt = outboxPublisherService.publishDueEvents();
+        assertThat(immediateAttempt).isEqualTo(0);
+
+        // 4. Simulate lease expiry by expiring lease_until to the past
+        jdbcTemplate.update("UPDATE outbox_events SET available_at = now() - INTERVAL '1 minute', lease_until = now() - INTERVAL '10 seconds' WHERE event_id = ?", unpub.eventId());
+
+        // 5. Publisher B recovers and publishes due events
+        outboxPublisherService.setCrashInjector(null);
+        int publishedCount = outboxPublisherService.publishDueEvents();
+        assertThat(publishedCount).isGreaterThanOrEqualTo(1);
+
+        OutboxEventRecord markedPub = outboxRepository.findById(unpub.eventId()).orElseThrow();
+        assertThat(markedPub.publishedAt()).isNotNull();
+
+        // 6. Consumer receives duplicate Kafka deliveries and deduplicates
+        ConsumerRecords<String, String> records = testConsumer.poll(Duration.ofSeconds(10));
+        long count = 0;
+        for (ConsumerRecord<String, String> r : records) {
+            if (transferId.toString().equals(r.key())) {
+                count++;
+                EventEnvelope envelope = objectMapper.readValue(r.value(), EventEnvelope.class);
+                asyncTransferProcessor.processTransferEvent(envelope);
+            }
+        }
+        assertThat(count).isGreaterThanOrEqualTo(2);
+
+        // 7. Invariants: Exactly one debit and one credit, terminal SUCCEEDED
+        TransferRecord finalTransfer = transferRepository.findById(transferId).orElseThrow();
+        assertThat(finalTransfer.status()).isEqualTo(TransferStatus.SUCCEEDED);
+
+        List<LedgerEntryRecord> entries = ledgerRepository.findByTransferId(transferId);
+        assertThat(entries).hasSize(2);
+
+        AccountRecord accA = accountRepository.findById(accountAId).orElseThrow();
+        AccountRecord accB = accountRepository.findById(accountBId).orElseThrow();
+        assertThat(accA.currentBalance()).isEqualByComparingTo(new BigDecimal("850.00")); // 1000 - 150
+        assertThat(accB.currentBalance()).isEqualByComparingTo(new BigDecimal("650.00")); // 500 + 150
+    }
 }

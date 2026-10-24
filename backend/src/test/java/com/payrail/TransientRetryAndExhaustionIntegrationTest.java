@@ -70,6 +70,9 @@ class TransientRetryAndExhaustionIntegrationTest extends BaseIntegrationTest {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private com.payrail.outbox.service.OutboxPublisherService outboxPublisherService;
+
     @Value("${payrail.topics.transfer-commands-dlq:payrail.transfer-commands.dlq.v1}")
     private String dlqTopic;
 
@@ -266,7 +269,10 @@ class TransientRetryAndExhaustionIntegrationTest extends BaseIntegrationTest {
         List<LedgerEntryRecord> entries = ledgerRepository.findByTransferId(transferId);
         assertThat(entries).isEmpty();
 
-        // 4. Verify message emitted to DLQ topic
+        // 4. Verify message emitted to DLQ topic via leased outbox publisher
+        int dlqPublished = outboxPublisherService.publishDueEvents();
+        assertThat(dlqPublished).isGreaterThanOrEqualTo(1);
+
         ConsumerRecords<String, String> dlqRecords = dlqConsumer.poll(Duration.ofSeconds(10));
         assertThat(dlqRecords.isEmpty()).isFalse();
 
@@ -283,5 +289,109 @@ class TransientRetryAndExhaustionIntegrationTest extends BaseIntegrationTest {
         assertThat(dlqEnvelope.transferId()).isEqualTo(transferId);
         assertThat(dlqEnvelope.failureCode()).isEqualTo("RETRY_EXHAUSTED");
         assertThat(dlqEnvelope.attemptCount()).isEqualTo(5);
+    }
+
+    @Test
+    @DisplayName("Finding 1: DLQ record for retry-exhausted transfer is durable across broker outage and delivered upon recovery without repeating financial effects")
+    void shouldDeliverDlqRecordDurableAcrossBrokerOutageForRetryExhaustedTransfer() throws Exception {
+        String idempotencyKey = "key-exhaust-outage-" + UUID.randomUUID();
+        CreateTransferRequest request = new CreateTransferRequest(accountAId, accountBId, "75.00", "INR");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+        headers.set("X-Correlation-Id", UUID.randomUUID().toString());
+
+        ResponseEntity<TransferResponse> response = restTemplate.exchange(
+                "/api/v1/transfers",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                TransferResponse.class
+        );
+
+        UUID transferId = response.getBody().id();
+
+        // 1. Inject permanent technical failure on ALL attempts
+        asyncTransferProcessor.setFailureInjector((transfer, attemptNumber) -> {
+            throw new RuntimeException("Simulated service failure on attempt " + attemptNumber);
+        });
+
+        // 2. Run attempts 1 to 5 to reach retry exhaustion
+        for (int i = 1; i <= 5; i++) {
+            EventEnvelope env = new EventEnvelope(
+                    UUID.randomUUID(),
+                    i == 1 ? "transfer.requested" : "transfer.retry",
+                    1,
+                    Instant.now(),
+                    "transfer",
+                    transferId,
+                    (long) i,
+                    UUID.randomUUID(),
+                    objectMapper.readTree(objectMapper.writeValueAsString(Map.of("transferId", transferId.toString())))
+            );
+            asyncTransferProcessor.processTransferEvent(env);
+        }
+
+        // 3. Verify transfer is marked FAILED and DLQ record is durably stored in PostgreSQL outbox_events
+        TransferRecord transfer = transferRepository.findById(transferId).orElseThrow();
+        assertThat(transfer.status()).isEqualTo(TransferStatus.FAILED);
+        assertThat(transfer.failureCode()).isEqualTo("RETRY_EXHAUSTED");
+
+        List<OutboxEventRecord> unpublished = outboxRepository.findUnpublished(Instant.now().plusSeconds(60));
+        OutboxEventRecord dlqEvent = unpublished.stream()
+                .filter(e -> "transfer.dlq".equals(e.eventType()) && transferId.equals(e.aggregateId()))
+                .findFirst()
+                .orElseThrow();
+        assertThat(dlqEvent.publishedAt()).isNull();
+
+        // Verify zero financial ledger entries
+        assertThat(ledgerRepository.findByTransferId(transferId)).isEmpty();
+
+        // 4. Broker recovers: leased outbox publisher delivers the DLQ record
+        int published = outboxPublisherService.publishDueEvents();
+        assertThat(published).isGreaterThanOrEqualTo(1);
+
+        OutboxEventRecord updatedDlq = outboxRepository.findById(dlqEvent.eventId()).orElseThrow();
+        assertThat(updatedDlq.publishedAt()).isNotNull();
+
+        // 5. Verify received on Kafka DLQ topic
+        ConsumerRecords<String, String> dlqRecords = dlqConsumer.poll(Duration.ofSeconds(10));
+        assertThat(dlqRecords.isEmpty()).isFalse();
+
+        ConsumerRecord<String, String> matchedRecord = null;
+        for (ConsumerRecord<String, String> r : dlqRecords) {
+            if (transferId.toString().equals(r.key())) {
+                matchedRecord = r;
+                break;
+            }
+        }
+        assertThat(matchedRecord).isNotNull();
+        DeadLetterEnvelope receivedDlq = objectMapper.readValue(matchedRecord.value(), DeadLetterEnvelope.class);
+        assertThat(receivedDlq.transferId()).isEqualTo(transferId);
+        assertThat(receivedDlq.failureCode()).isEqualTo("RETRY_EXHAUSTED");
+        assertThat(receivedDlq.attemptCount()).isEqualTo(5);
+
+        // 6. Deduplication guard: Duplicate delivery arrives for terminal transfer
+        EventEnvelope duplicateEnvelope = new EventEnvelope(
+                UUID.randomUUID(),
+                "transfer.retry",
+                1,
+                Instant.now(),
+                "transfer",
+                transferId,
+                6L,
+                UUID.randomUUID(),
+                objectMapper.readTree(objectMapper.writeValueAsString(Map.of("transferId", transferId.toString())))
+        );
+        asyncTransferProcessor.processTransferEvent(duplicateEnvelope);
+
+        // 7. Verify terminal state unchanged and zero ledger entries
+        TransferRecord finalTransfer = transferRepository.findById(transferId).orElseThrow();
+        assertThat(finalTransfer.status()).isEqualTo(TransferStatus.FAILED);
+        assertThat(ledgerRepository.findByTransferId(transferId)).isEmpty();
+
+        AccountRecord accA = accountRepository.findById(accountAId).orElseThrow();
+        AccountRecord accB = accountRepository.findById(accountBId).orElseThrow();
+        assertThat(accA.currentBalance()).isEqualByComparingTo(new BigDecimal("1000.00"));
+        assertThat(accB.currentBalance()).isEqualByComparingTo(new BigDecimal("500.00"));
     }
 }

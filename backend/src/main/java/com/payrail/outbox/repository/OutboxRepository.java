@@ -20,9 +20,17 @@ public interface OutboxRepository {
 
     boolean recordPublishFailure(UUID eventId, UUID leaseToken, String errorCode, String errorMessage, Instant nextAvailableAt);
 
+    boolean recordPublishExhausted(UUID eventId, UUID leaseToken, String errorCode, String errorMessage);
+
     int releaseStaleLeases(Instant now);
 
     List<OutboxEventRecord> findUnpublished(Instant threshold);
 
     long countUnpublished(Instant threshold);
+
+    long getNextAggregateSequence(String aggregateType, UUID aggregateId);
+
+    boolean resetForReplay(UUID eventId, Instant now);
+
+    boolean hasUnpublishedEvents(String aggregateType, UUID aggregateId);
 }
