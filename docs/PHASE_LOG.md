@@ -385,17 +385,17 @@
 - **Design decision(s):**
   - ADR-015: Explicit Kafka container error policy refusing offset commit on failure, non-bypass of exhausted outbox events during pending recovery, claim-fenced processing attempt finalization on stale lease expiry, and independent aggregate identity for DLQ events.
 - **Commands run:**
-  - `.\mvnw.cmd test` — PASS, 123 tests run, 0 failures, 0 errors, 0 skipped in 36.147s
-  - `.\mvnw.cmd -B verify` — PASS, 123 tests run, 0 failures, 0 errors, 0 skipped in 37.242s; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
-- **Test results:** unit `33 passed / 0 failed`; integration `90 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (123 total tests passing).
+  - `.\mvnw.cmd test` — PASS, 126 tests run, 0 failures, 0 errors, 0 skipped in 41.268s
+  - `.\mvnw.cmd -B verify` — PASS, 126 tests run, 0 failures, 0 errors, 0 skipped in 37.608s; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+- **Test results:** unit `33 passed / 0 failed`; integration `93 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (126 total tests passing).
 - **Acceptance criteria verified:**
   - Finding 1: Container-level error policy `DurableRecoveryEnforcingRecordRecoverer` refuses to commit offsets during database outage across all retry attempts; Kafka consumer offset is preserved uncommitted; message is redelivered and persisted cleanly when database is restored.
   - Finding 2: `findPendingWithoutOutbox` and `hasUnpublishedEvents` do not treat `PUBLISH_RETRY_EXHAUSTED` events as missing outbox events; repeated recovery sweeps generate 0 replacement commands; unrelated pending transfers recover safely; operator replay recovers exhausted transfers.
-  - Finding 3: Stale processing lease recovery finalizes attempt records in PostgreSQL within the same transaction as transfer state transition (`RETRY_SCHEDULED` when below limit, `EXHAUSTED` with `LEASE_EXPIRED` when at limit); fenced by `claimToken`, `attemptNumber`, and `transferId` so newer workers are never overwritten.
+  - Finding 3: Stale processing lease recovery finalizes attempt records in PostgreSQL within the same transaction as transfer state transition (`RETRY_SCHEDULED` when below limit, `EXHAUSTED` with `LEASE_EXPIRED` when at limit); fenced by `claimToken`, `attemptNumber`, and `transferId` so newer workers are never overwritten. A failed fenced update aborts the transaction cleanly without leaving dangling `IN_PROGRESS` rows.
   - Finding 4: DLQ outbox records use independent aggregate identity (`aggregate_type = 'dlq'`, `aggregate_id = eventId`, `aggregate_sequence = 1L`) and correlation ID key; eliminates race conditions under concurrent DLQ generation for the same transfer aggregate; zero sequence collisions.
 - **Not verified / blocked:** Phase 4 Operations and CI (Actuator metrics, health checks, Docker Compose multi-service verification, CI workflow enhancements; scheduled for Phase 4).
 - **Known limitations:** None for Phase 3.
-- **Reviewer notes / follow-up:** Phase 3 gate remediation complete. All gate criteria verified across 123 automated tests. Waiting at Phase 3 gate for independent review approval.
+- **Reviewer notes / follow-up:** Phase 3 gate remediation complete. All gate criteria verified across 126 automated tests. Waiting at Phase 3 gate for independent review approval.
 
 ## Entry template
 

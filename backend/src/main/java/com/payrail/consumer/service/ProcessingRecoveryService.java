@@ -125,6 +125,14 @@ public class ProcessingRecoveryService {
         }
 
         if (transfer.processingAttemptCount() >= maxAttempts) {
+            finalizeStaleAttemptOrThrow(
+                    transfer,
+                    "EXHAUSTED",
+                    "LEASE_EXPIRED_EXHAUSTED",
+                    "Processing lease expired after reaching max attempts (" + maxAttempts + ")",
+                    now
+            );
+
             transferRepository.completeProcessing(
                     transferId,
                     TransferStatus.FAILED,
@@ -145,18 +153,6 @@ public class ProcessingRecoveryService {
                     now
             ));
 
-            if (transfer.processingClaimToken() != null && transfer.processingAttemptCount() > 0) {
-                processingAttemptRepository.finalizeStaleAttempt(
-                        transferId,
-                        transfer.processingAttemptCount(),
-                        transfer.processingClaimToken(),
-                        "EXHAUSTED",
-                        "LEASE_EXPIRED_EXHAUSTED",
-                        "Processing lease expired after reaching max attempts (" + maxAttempts + ")",
-                        now
-                );
-            }
-
             deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
                     transferCommandsTopic,
                     null,
@@ -172,6 +168,14 @@ public class ProcessingRecoveryService {
             return true;
 
         } else {
+            finalizeStaleAttemptOrThrow(
+                    transfer,
+                    "RETRY_SCHEDULED",
+                    "STALE_LEASE_RECOVERED",
+                    "Stale processing lease recovered and retry scheduled",
+                    now
+            );
+
             // Reset to PENDING and enqueue retry outbox event
             transferRepository.resetToPending(transferId, now);
 
@@ -185,18 +189,6 @@ public class ProcessingRecoveryService {
                     transfer.correlationId(),
                     now
             ));
-
-            if (transfer.processingClaimToken() != null && transfer.processingAttemptCount() > 0) {
-                processingAttemptRepository.finalizeStaleAttempt(
-                        transferId,
-                        transfer.processingAttemptCount(),
-                        transfer.processingClaimToken(),
-                        "RETRY_SCHEDULED",
-                        "STALE_LEASE_RECOVERED",
-                        "Stale processing lease recovered and retry scheduled",
-                        now
-                );
-            }
 
             String retryPayload;
             try {
@@ -232,6 +224,44 @@ public class ProcessingRecoveryService {
 
             log.info("Recovered stale processing lease on transfer id={}; returned to PENDING and enqueued outbox recovery event seq={}.", transferId, nextSeq);
             return true;
+        }
+    }
+
+    /**
+     * Finalizes the exact attempt that owned the expired lease before changing transfer state.
+     * A missing token/attempt or a failed fenced update aborts the enclosing transaction so the
+     * transfer, history, and outbox remain unchanged rather than leaving a dangling IN_PROGRESS row.
+     */
+    private void finalizeStaleAttemptOrThrow(
+            TransferRecord transfer,
+            String outcome,
+            String errorCode,
+            String safeErrorMessage,
+            Instant finishedAt
+    ) {
+        int attemptNumber = transfer.processingAttemptCount();
+        UUID claimToken = transfer.processingClaimToken();
+        if (attemptNumber <= 0 || claimToken == null) {
+            throw new IllegalStateException(
+                    "Cannot finalize stale processing attempt for transfer id=" + transfer.id()
+                            + ": missing positive attempt number or claim token"
+            );
+        }
+
+        boolean finalized = processingAttemptRepository.finalizeStaleAttempt(
+                transfer.id(),
+                attemptNumber,
+                claimToken,
+                outcome,
+                errorCode,
+                safeErrorMessage,
+                finishedAt
+        );
+        if (!finalized) {
+            throw new IllegalStateException(
+                    "Failed to finalize stale processing attempt for transfer id=" + transfer.id()
+                            + " attempt=" + attemptNumber + "; refusing recovery transition"
+            );
         }
     }
 

@@ -48,7 +48,7 @@ Use checkboxes only after verified implementation. Initially all implementation 
 - [x] Expired worker leases finalize stale attempt records (`RETRY_SCHEDULED` or `EXHAUSTED`) fenced by claim token and transfer ID.
 - [x] Explicit container-level error policy (`DurableRecoveryEnforcingRecordRecoverer`): messages preserved uncommitted on DB outage/exhaustion and redelivered cleanly upon recovery.
 - [x] Expired lease/outbox recovery is idempotent and multi-instance safe.
-- [x] Broker and DB outage/duplicate/crash/deadlock/concurrency tests pass (123 tests passing).
+- [x] Broker and DB outage/duplicate/crash/deadlock/concurrency tests pass (126 tests passing).
 - [x] Delivery semantics are accurately described as at-least-once + idempotent effects.
 
 ## Phase 4 — Operations and CI

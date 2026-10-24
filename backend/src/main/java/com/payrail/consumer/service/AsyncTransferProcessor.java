@@ -98,9 +98,9 @@ public class AsyncTransferProcessor {
 
     @Autowired(required = false)
     public void setFailureInjector(AsyncProcessingFailureInjector failureInjector) {
-        if (failureInjector != null) {
-            this.failureInjector = failureInjector;
-        }
+        this.failureInjector = failureInjector != null
+                ? failureInjector
+                : AsyncProcessingFailureInjector.noop();
     }
 
     public enum ClaimStatus {

@@ -62,6 +62,7 @@ out/
 Thumbs.db
 ehthumbs.db
 desktop.ini
+*.patch
 
 # Persistence and container runtime state
 pgdata/

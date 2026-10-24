@@ -64,9 +64,9 @@ public class OutboxPublisherService {
 
     @Autowired(required = false)
     public void setCrashInjector(OutboxPublisherCrashInjector crashInjector) {
-        if (crashInjector != null) {
-            this.crashInjector = crashInjector;
-        }
+        this.crashInjector = crashInjector != null
+                ? crashInjector
+                : OutboxPublisherCrashInjector.noop();
     }
 
     @Scheduled(fixedDelayString = "${payrail.outbox.poll-interval:500ms}")

@@ -12,6 +12,7 @@ import com.payrail.ledger.repository.LedgerRepository;
 import com.payrail.outbox.domain.EventEnvelope;
 import com.payrail.outbox.domain.OutboxEventRecord;
 import com.payrail.outbox.repository.OutboxRepository;
+import com.payrail.transfer.domain.ProcessingAttemptRecord;
 import com.payrail.transfer.domain.TransferRecord;
 import com.payrail.transfer.domain.TransferStatus;
 import com.payrail.transfer.domain.TransferStatusHistoryRecord;
@@ -27,6 +28,7 @@ import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
+import org.springframework.test.context.TestPropertySource;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -35,7 +37,13 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@TestPropertySource(properties = {
+        "payrail.processing.consumer-enabled=false",
+        "payrail.processing.recovery-sweep-enabled=false",
+        "payrail.outbox.publisher-enabled=false"
+})
 class StaleLeaseRecoveryIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
@@ -121,6 +129,19 @@ class StaleLeaseRecoveryIntegrationTest extends BaseIntegrationTest {
                     processing_attempt_count = 1
                 WHERE id = ?
                 """, deadWorkerClaimToken, java.sql.Timestamp.from(expiredTime), transferId);
+
+        processingAttemptRepository.insert(new ProcessingAttemptRecord(
+                UUID.randomUUID(),
+                transferId,
+                1,
+                deadWorkerClaimToken,
+                "IN_PROGRESS",
+                null,
+                null,
+                expiredTime,
+                null,
+                null
+        ));
 
         // 2. Run recovery sweep
         int recoveredCount = processingRecoveryService.sweepStaleProcessingLeases();
@@ -667,6 +688,109 @@ class StaleLeaseRecoveryIntegrationTest extends BaseIntegrationTest {
 
         assertThat(attempt.outcome()).isEqualTo("IN_PROGRESS");
         assertThat(attempt.finishedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("Recovery rolls back below the retry limit when stale attempt finalization fails")
+    void shouldRollbackRetryRecoveryWhenAttemptFinalizationFails() throws Exception {
+        UUID transferClaimToken = UUID.randomUUID();
+        UUID mismatchedAttemptToken = UUID.randomUUID();
+        UUID transferId = createStaleProcessingTransfer("55.00", 1, transferClaimToken, mismatchedAttemptToken);
+
+        int historyBefore = statusHistoryRepository.findByTransferId(transferId).size();
+        long outboxBefore = countOutboxRowsForTransfer(transferId);
+
+        assertThatThrownBy(() -> processingRecoveryService.sweepStaleProcessingLeases())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Failed to finalize stale processing attempt");
+
+        TransferRecord transfer = transferRepository.findById(transferId).orElseThrow();
+        assertThat(transfer.status()).isEqualTo(TransferStatus.PROCESSING);
+        assertThat(transfer.processingClaimToken()).isEqualTo(transferClaimToken);
+        assertThat(statusHistoryRepository.findByTransferId(transferId)).hasSize(historyBefore);
+        assertThat(countOutboxRowsForTransfer(transferId)).isEqualTo(outboxBefore);
+
+        ProcessingAttemptRecord attempt = processingAttemptRepository.findByTransferIdAndAttempt(transferId, 1).orElseThrow();
+        assertThat(attempt.claimToken()).isEqualTo(mismatchedAttemptToken);
+        assertThat(attempt.outcome()).isEqualTo("IN_PROGRESS");
+        assertThat(attempt.finishedAt()).isNull();
+    }
+
+    @Test
+    @DisplayName("Exhaustion recovery rolls back when stale attempt finalization fails")
+    void shouldRollbackExhaustionRecoveryWhenAttemptFinalizationFails() throws Exception {
+        UUID transferClaimToken = UUID.randomUUID();
+        UUID mismatchedAttemptToken = UUID.randomUUID();
+        UUID transferId = createStaleProcessingTransfer("65.00", 5, transferClaimToken, mismatchedAttemptToken);
+
+        int historyBefore = statusHistoryRepository.findByTransferId(transferId).size();
+        long outboxBefore = countOutboxRowsForTransfer(transferId);
+
+        assertThatThrownBy(() -> processingRecoveryService.sweepStaleProcessingLeases())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Failed to finalize stale processing attempt");
+
+        TransferRecord transfer = transferRepository.findById(transferId).orElseThrow();
+        assertThat(transfer.status()).isEqualTo(TransferStatus.PROCESSING);
+        assertThat(transfer.processingClaimToken()).isEqualTo(transferClaimToken);
+        assertThat(transfer.processingAttemptCount()).isEqualTo(5);
+        assertThat(statusHistoryRepository.findByTransferId(transferId)).hasSize(historyBefore);
+        assertThat(countOutboxRowsForTransfer(transferId)).isEqualTo(outboxBefore);
+
+        ProcessingAttemptRecord attempt = processingAttemptRepository.findByTransferIdAndAttempt(transferId, 5).orElseThrow();
+        assertThat(attempt.claimToken()).isEqualTo(mismatchedAttemptToken);
+        assertThat(attempt.outcome()).isEqualTo("IN_PROGRESS");
+        assertThat(attempt.finishedAt()).isNull();
+    }
+
+    private UUID createStaleProcessingTransfer(
+            String amount,
+            int attemptNumber,
+            UUID transferClaimToken,
+            UUID attemptClaimToken
+    ) throws Exception {
+        String idempotencyKey = "key-stale-finalization-" + UUID.randomUUID();
+        CreateTransferRequest request = new CreateTransferRequest(accountAId, accountBId, amount, "INR");
+        ResponseEntity<TransferResponse> response = restTemplate.exchange(
+                "/api/v1/transfers",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headersWith(idempotencyKey)),
+                TransferResponse.class
+        );
+        UUID transferId = response.getBody().id();
+        Instant startedAt = Instant.now().minusSeconds(120);
+
+        jdbcTemplate.update("""
+                UPDATE transfers
+                SET status = 'PROCESSING',
+                    processing_claim_token = ?,
+                    processing_lease_until = now() - INTERVAL '10 seconds',
+                    processing_attempt_count = ?
+                WHERE id = ?
+                """, transferClaimToken, attemptNumber, transferId);
+
+        processingAttemptRepository.insert(new ProcessingAttemptRecord(
+                UUID.randomUUID(),
+                transferId,
+                attemptNumber,
+                attemptClaimToken,
+                "IN_PROGRESS",
+                null,
+                null,
+                startedAt,
+                null,
+                null
+        ));
+        return transferId;
+    }
+
+    private long countOutboxRowsForTransfer(UUID transferId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM outbox_events WHERE aggregate_id = ? OR correlation_id = ?",
+                Integer.class,
+                transferId,
+                transferId
+        );
     }
 
     private HttpHeaders headersWith(String idempotencyKey) {

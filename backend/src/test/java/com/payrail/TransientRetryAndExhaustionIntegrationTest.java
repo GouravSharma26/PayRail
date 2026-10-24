@@ -36,6 +36,8 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 
+import org.springframework.test.context.TestPropertySource;
+
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.Instant;
@@ -47,6 +49,11 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+@TestPropertySource(properties = {
+        "payrail.processing.consumer-enabled=false",
+        "payrail.processing.recovery-sweep-enabled=false",
+        "payrail.outbox.publisher-enabled=false"
+})
 class TransientRetryAndExhaustionIntegrationTest extends BaseIntegrationTest {
 
     @Autowired
@@ -117,6 +124,47 @@ class TransientRetryAndExhaustionIntegrationTest extends BaseIntegrationTest {
         if (dlqConsumer != null) {
             dlqConsumer.close();
         }
+    }
+
+    @Test
+    @DisplayName("Clearing the processing failure injector restores normal processing")
+    void shouldRestoreNoopAfterClearingFailureInjector() throws Exception {
+        String idempotencyKey = "key-injector-reset-" + UUID.randomUUID();
+        CreateTransferRequest request = new CreateTransferRequest(accountAId, accountBId, "25.00", "INR");
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("Idempotency-Key", idempotencyKey);
+        headers.set("X-Correlation-Id", UUID.randomUUID().toString());
+
+        ResponseEntity<TransferResponse> response = restTemplate.exchange(
+                "/api/v1/transfers",
+                HttpMethod.POST,
+                new HttpEntity<>(request, headers),
+                TransferResponse.class
+        );
+        UUID transferId = response.getBody().id();
+
+        asyncTransferProcessor.setFailureInjector((transfer, attemptNumber) -> {
+            throw new IllegalStateException("The failure injector should have been cleared");
+        });
+        asyncTransferProcessor.setFailureInjector(null);
+
+        EventEnvelope envelope = new EventEnvelope(
+                UUID.randomUUID(),
+                "transfer.requested",
+                1,
+                Instant.now(),
+                "transfer",
+                transferId,
+                1L,
+                UUID.randomUUID(),
+                objectMapper.readTree(objectMapper.writeValueAsString(Map.of("transferId", transferId.toString())))
+        );
+        asyncTransferProcessor.processTransferEvent(envelope);
+
+        TransferRecord completed = transferRepository.findById(transferId).orElseThrow();
+        assertThat(completed.status()).isEqualTo(TransferStatus.SUCCEEDED);
+        assertThat(ledgerRepository.findByTransferId(transferId)).hasSize(2);
     }
 
     @Test
