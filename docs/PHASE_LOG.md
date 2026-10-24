@@ -315,7 +315,7 @@
 
 ### 2026-10-24 — Phase 3: Review Remediation
 
-- **Commit:** `85cb648`
+- **Commit:** `0893ec7`
 - **Scope:** Technical review remediation addressing Findings 1–5 and test fidelity: durable DLQ delivery via transactional outbox, bounded outbox retries with inspectable exhaustion state, transactional non-colliding stale PENDING recovery sequencing and concurrency protection, claim-fenced worker failure handling, propagation of unhandled consumer exceptions without silent acknowledgments, and accurate publisher crash lease-intact recovery test.
 - **Files changed:**
   - `backend/src/main/java/com/payrail/consumer/service/DeadLetterPublisher.java` (stores DLQ work durably in PostgreSQL `outbox_events` with `event_type = 'transfer.dlq'` within caller's DB transaction; eliminates direct broker publishing in DB transactions)
