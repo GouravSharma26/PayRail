@@ -161,7 +161,7 @@
 
 ### 2026-10-24 — Phase 2: Technical Review Remediation
 
-- **Commit:** `ba27e3f`
+- **Commit:** `393ea08`
 - **Scope:** Technical review remediation addressing Findings 1–5: PostgreSQL deferred constraint triggers for ledger invariants, state-transition contract clarification, hardened full reconciliation audit, dev-only manual processing endpoint isolation, and PostgreSQL trigger error code classification.
 - **Files changed:**
   - `backend/src/main/resources/db/migration/V2__ledger_immutability_and_triggers.sql` (corrected error code to SQLSTATE 23514 check_violation)
