@@ -200,7 +200,7 @@
 
 ### 2026-10-24 — Phase 2: Final Technical Review Remediation
 
-- **Commit:** `09595f8`
+- **Commit:** `f68549e`
 - **Scope:** Address remaining Phase 2 review blockers: remove implicit dev profile default for safe default runtime, enforce commit-time currency matching and account balance projection invariants via PostgreSQL deferred triggers, restore historical V2 migration and add V4 (SQLSTATE 23514) and V5 (account projection and currency invariants) migrations, verify upgrade path with validate-on-migrate.
 - **Files changed:**
   - `backend/src/main/resources/application.yml` (removed implicit dev profile default: `active: ${SPRING_PROFILES_ACTIVE:}`)
