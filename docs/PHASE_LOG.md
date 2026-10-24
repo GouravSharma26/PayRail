@@ -399,7 +399,8 @@
 
 ### 2026-10-25 — Phase 3: Recovery-Sweep Resilience Correction
 
-- **Commit:** `59a6352`
+- **Commit:** [`45ee204`](https://github.com/GouravSharma26/PayRail/commit/45ee204)
+- **CI Workflow Run:** [GitHub Actions Run 40122645771](https://github.com/GouravSharma26/PayRail/actions/runs/40122645771) — PASS (`conclusion: success`, Validate Docker Compose & Build & Test JDK 21)
 - **Scope:** Technical correction isolating individual candidate transactions within `ProcessingRecoveryService.sweepStaleProcessingLeases()`, preventing failed fenced attempt finalization from escaping the sweep loop or aborting subsequent recovery categories (`sweepStaleOutboxLeases()`, `sweepStalePendingTransfers()`).
 - **Files changed:**
   - `backend/src/main/java/com/payrail/consumer/service/ProcessingRecoveryService.java` (wrapped candidate execution in try-catch around `transactionTemplate.execute(...)`; logged failure details at error level; allowed sweep loop to continue)
@@ -419,7 +420,7 @@
   - Bad candidate does not prevent `runRecoverySweep()` from continuing to stale-outbox and stale-pending recovery categories.
 - **Not verified / blocked:** Phase 4 Operations and CI (scheduled for Phase 4).
 - **Known limitations:** None for Phase 3.
-- **Reviewer notes / follow-up:** Phase 3 recovery-sweep resilience correction complete. Ready for independent review.
+- **Reviewer notes / follow-up:** Phase 3 recovery-sweep resilience correction complete. Verified on GitHub Actions CI. Ready for independent review.
 
 ## Entry template
 
