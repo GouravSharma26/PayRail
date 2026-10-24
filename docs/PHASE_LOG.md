@@ -51,6 +51,68 @@
 - **Known limitations:** Application domain, Flyway migrations, and runtime endpoints are not yet implemented (scheduled for Phase 1).
 - **Reviewer notes / follow-up:** Ready for Phase 1 review and gate approval.
 
+### 2026-10-24 — Phase 1: Core domain and REST API
+
+- **Commit:** pending commit
+- **Scope:** Implementation of synthetic accounts, transfer submission, request validation, transaction-state management, durable idempotency, outbox event persistence, Flyway migrations, OpenAPI documentation, and automated unit/integration tests with Testcontainers.
+- **Files changed:**
+  - `backend/src/main/resources/db/migration/V1__initial_schema.sql` (Authoritative 10-table relational schema with strict check constraints and indexes)
+  - `backend/src/main/resources/application.yml` (Structured YAML configuration with correlation ID logging pattern, configurable DB port, Actuator, and OpenAPI)
+  - `backend/src/main/resources/application-dev.yml` (Dev profile with deterministic synthetic account seeding enabled)
+  - `backend/src/main/resources/application-test.yml` (Test profile with Flyway auto-migrate and test settings)
+  - `backend/src/main/java/com/payrail/PayRailApplication.java` (Spring Boot main class)
+  - `backend/src/main/java/com/payrail/common/model/ErrorDetail.java` & `ErrorResponse.java` & `PagedResponse.java` (Consistent REST API error and pagination models)
+  - `backend/src/main/java/com/payrail/common/exception/*.java` (Domain exceptions with structured error codes: VALIDATION_ERROR, RESOURCE_NOT_FOUND, IDEMPOTENCY_KEY_REUSED, INVALID_TRANSFER, CURRENCY_MISMATCH, ACCOUNT_INACTIVE, INSUFFICIENT_FUNDS)
+  - `backend/src/main/java/com/payrail/common/util/AmountParser.java` (Strict scale <= 2 and precision <= 19 parser; strictly avoids float/double)
+  - `backend/src/main/java/com/payrail/common/util/CanonicalRequestHasher.java` (Canonical SHA-256 payload hashing and safe key fingerprinting)
+  - `backend/src/main/java/com/payrail/common/filter/CorrelationIdFilter.java` (HTTP header X-Correlation-Id tracing and MDC injection)
+  - `backend/src/main/java/com/payrail/common/web/GlobalExceptionHandler.java` (Sanitized JSON exception handling avoiding secret leaks and raw stack traces)
+  - `backend/src/main/java/com/payrail/account/domain/*` & `dto/*` & `repository/*` & `service/*` & `controller/*` (Account management module)
+  - `backend/src/main/java/com/payrail/idempotency/domain/*` & `repository/*` (Durable idempotency persistence)
+  - `backend/src/main/java/com/payrail/outbox/domain/*` & `repository/*` (Transactional outbox persistence)
+  - `backend/src/main/java/com/payrail/transfer/domain/*` & `dto/*` & `repository/*` & `service/*` & `controller/*` (Transfer submission and query module)
+  - `backend/src/main/java/com/payrail/config/OpenApiConfig.java` (OpenAPI 3.0 metadata with synthetic-only notice)
+  - `backend/src/main/java/com/payrail/seed/DevDataSeeder.java` (Deterministic synthetic test accounts for local dev)
+  - `backend/src/test/java/com/payrail/BaseIntegrationTest.java` (Testcontainers PostgreSQL 16.8 singleton harness with automatic table clearing)
+  - `backend/src/test/java/com/payrail/FlywayMigrationIntegrationTest.java` (Flyway migration verification on clean container)
+  - `backend/src/test/java/com/payrail/AccountApiIntegrationTest.java` (Account REST API integration tests)
+  - `backend/src/test/java/com/payrail/TransferApiIntegrationTest.java` (Transfer API and idempotency integration tests)
+  - `backend/src/test/java/com/payrail/common/util/AmountParserTest.java` (Unit tests for monetary amount validation)
+  - `backend/src/test/java/com/payrail/common/util/CanonicalRequestHasherTest.java` (Unit tests for canonical hashing and key formatting)
+  - `backend/src/test/resources/docker-java.properties` & `testcontainers.properties` (Windows Docker Desktop pipe and API version configuration)
+  - `docker-compose.yml` (Added POSTGRES_PORT fallback to avoid local port collisions)
+  - `.env.example` (Updated with POSTGRES_PORT and DB_PORT documentation)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (Checked off all Phase 1 verification items)
+  - `docs/PHASE_LOG.md` (Recorded Phase 1 verification evidence)
+- **Design decision(s):**
+  - Confirmed Phase 1 transfers start strictly in `PENDING` status. No transfer can be marked `SUCCEEDED` until Phase 2 implements the ledger-posting transaction path.
+  - Submissions are atomic across `transfers`, `idempotency_records`, `transfer_status_history`, and `outbox_events` in a single JDBC transaction.
+  - Concurrent idempotency key collisions are handled by catching PostgreSQL duplicate key constraint violation on `idempotency_records` and re-reading the committed record.
+  - Managed PostgreSQL container in `BaseIntegrationTest` as a singleton lifecycle across all test classes to avoid connection-reset issues.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 49 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 36.757s; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+  - `docker compose up -d postgres` (with POSTGRES_PORT=5438) — PASS, container `payrail-postgres` started and healthy
+  - `java -Dspring.profiles.active=dev -DDB_PORT=5438 -jar backend/target/payrail-backend-0.1.0-SNAPSHOT.jar` — PASS, dev server started in 5.031s and seeded demo accounts
+  - `curl.exe --max-time 5 -i http://localhost:8080/actuator/health` — PASS, HTTP 200 OK with `{"status":"UP","groups":["liveness","readiness"]}`
+  - `curl.exe --max-time 10 -i -X POST http://localhost:8080/api/v1/transfers` (new transfer) — PASS, HTTP 202 Accepted, transfer in `PENDING` state
+  - `curl.exe --max-time 10 -i -X POST http://localhost:8080/api/v1/transfers` (same key + same payload replay) — PASS, HTTP 200 OK returning original transfer
+  - `curl.exe --max-time 10 -i -X POST http://localhost:8080/api/v1/transfers` (same key + different payload) — PASS, HTTP 409 Conflict with `IDEMPOTENCY_KEY_REUSED`
+  - `curl.exe --max-time 10 -i "http://localhost:8080/api/v1/transfers?page=0&size=10"` — PASS, HTTP 200 OK with paginated transfers list
+  - `curl.exe --max-time 10 -i "http://localhost:8080/api/v1/transfers/{id}/history"` — PASS, HTTP 200 OK with transition history
+  - `curl.exe --max-time 10 -i "http://localhost:8080/v3/api-docs"` — PASS, HTTP 200 OK with complete OpenAPI 3.0 specification
+- **Test results:** unit `33 passed / 0 failed`; integration `16 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (49 total tests passing).
+- **Acceptance criteria verified:**
+  - Application builds cleanly from scratch with `./mvnw.cmd`.
+  - Flyway migration V1 applies cleanly to an empty PostgreSQL database.
+  - Synthetic accounts can be created, read, and paginated.
+  - Strict transfer validation prevents negative/zero amounts, excess scale, mismatched currencies, and inactive/non-existent accounts.
+  - Idempotent replay produces HTTP 200 with original transfer; key reuse produces HTTP 409 Conflict.
+  - No transfer falsely appears `SUCCEEDED` (Phase 1 gate invariant strictly preserved).
+- **Not verified / blocked:** Kafka event consumption, ledger postings, and balance mutations (intentionally deferred to Phase 2 and Phase 3).
+- **Known limitations:** Transfers currently remain in `PENDING` status awaiting Phase 2 ledger-posting transaction implementation and Phase 3 broker integration.
+- **Reviewer notes / follow-up:** Phase 1 complete. Ready for Phase 1 review and gate approval.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name

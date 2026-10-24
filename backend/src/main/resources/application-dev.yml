@@ -1,0 +1,9 @@
+# Development profile configuration
+payrail:
+  seed:
+    enabled: true
+
+logging:
+  level:
+    com.payrail: DEBUG
+    org.springframework.jdbc.core: DEBUG

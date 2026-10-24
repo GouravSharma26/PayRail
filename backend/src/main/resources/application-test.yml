@@ -1,0 +1,14 @@
+# Test profile configuration
+spring:
+  flyway:
+    enabled: true
+    clean-disabled: true
+
+payrail:
+  seed:
+    enabled: false
+
+logging:
+  level:
+    root: WARN
+    com.payrail: DEBUG

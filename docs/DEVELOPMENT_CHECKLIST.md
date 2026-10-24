@@ -13,15 +13,15 @@ Use checkboxes only after verified implementation. Initially all implementation 
 
 ## Phase 1 — Core domain and REST API
 
-- [ ] Spring Boot app starts with explicit configuration and structured errors.
-- [ ] Flyway migration succeeds on fresh PostgreSQL.
-- [ ] Accounts can be created/listed/read with synthetic data only.
-- [ ] Transfer request validation is strict and amounts use decimal strings / `BigDecimal`.
-- [ ] API idempotency record, transfer, initial history, and outbox row are atomic.
-- [ ] Same idempotency key/same request returns original transfer.
-- [ ] Same key/different request returns documented conflict.
-- [ ] Transfer status and search APIs are paginated and filtered.
-- [ ] Tests and clean build pass; no transfer falsely appears succeeded.
+- [x] Spring Boot app starts with explicit configuration and structured errors.
+- [x] Flyway migration succeeds on fresh PostgreSQL.
+- [x] Accounts can be created/listed/read with synthetic data only.
+- [x] Transfer request validation is strict and amounts use decimal strings / `BigDecimal`.
+- [x] API idempotency record, transfer, initial history, and outbox row are atomic.
+- [x] Same idempotency key/same request returns original transfer.
+- [x] Same key/different request returns documented conflict.
+- [x] Transfer status and search APIs are paginated and filtered.
+- [x] Tests and clean build pass; no transfer falsely appears succeeded.
 
 ## Phase 2 — Ledger / consistency
 
