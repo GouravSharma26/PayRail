@@ -52,6 +52,8 @@ public class OutboxPublisherService {
 
     private OutboxPublisherCrashInjector crashInjector = OutboxPublisherCrashInjector.noop();
 
+    private com.payrail.config.PayRailMetrics metrics;
+
     public OutboxPublisherService(
             OutboxRepository outboxRepository,
             KafkaTemplate<String, String> kafkaTemplate,
@@ -60,6 +62,11 @@ public class OutboxPublisherService {
         this.outboxRepository = outboxRepository;
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setMetrics(com.payrail.config.PayRailMetrics metrics) {
+        this.metrics = metrics;
     }
 
     @Autowired(required = false)
@@ -161,6 +168,8 @@ public class OutboxPublisherService {
             boolean marked = outboxRepository.markPublished(event.eventId(), leaseToken, Instant.now());
             if (!marked) {
                 log.warn("Outbox event id={} lease expired or pre-empted before marking published", event.eventId());
+            } else if (metrics != null) {
+                metrics.recordOutboxPublishSuccess();
             }
             return marked;
 
@@ -180,6 +189,9 @@ public class OutboxPublisherService {
                         "PUBLISH_RETRY_EXHAUSTED",
                         "Max publish attempts reached (" + maxRetries + "): " + e.getMessage()
                 );
+                if (metrics != null) {
+                    metrics.recordOutboxPublishExhausted();
+                }
             } else {
                 Instant nextAvailableAt = calculateBackoff(event.publishAttempts());
                 outboxRepository.recordPublishFailure(
@@ -189,6 +201,9 @@ public class OutboxPublisherService {
                         e.getMessage(),
                         nextAvailableAt
                 );
+                if (metrics != null) {
+                    metrics.recordOutboxPublishFailure();
+                }
             }
             return false;
         }

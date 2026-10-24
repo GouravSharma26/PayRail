@@ -53,15 +53,15 @@ Use checkboxes only after verified implementation. Initially all implementation 
 
 ## Phase 4 — Operations and CI
 
-- [ ] Reconciliation runs/issues are persisted and searchable.
-- [ ] Transfer history, attempt details, outbox diagnostics and safe ops APIs exist.
-- [ ] Readiness/liveness endpoints expose only intended details.
-- [ ] JSON logs include correlation IDs and exclude secrets/raw idempotency keys.
-- [ ] Metrics have bounded labels and include backlog/retry/failure signals.
-- [ ] Docker Compose health checks work from clean start.
-- [ ] CI runs required unit and Testcontainers integration tests.
-- [ ] End-to-end walkthrough passes from a clean checkout.
-- [ ] Documentation matches actual code and no unverified claims remain.
+- [x] Reconciliation runs/issues are persisted and searchable (`ReconciliationRunRepository`, `ReconciliationIssueRepository`, `GET /api/v1/ops/reconciliation/runs`, `GET /api/v1/ops/reconciliation/runs/{runId}`).
+- [x] Transfer history, attempt details, outbox diagnostics and safe ops APIs exist (`GET /api/v1/transfers/{id}/history`, `GET /api/v1/transfers/{id}/attempts`, `GET /api/v1/ops/outbox/status`, `GET /api/v1/ops/health/summary`).
+- [x] Readiness/liveness endpoints expose only intended details (`/actuator/health/liveness`, `/actuator/health/readiness` with `readinessState,db,kafka`).
+- [x] JSON logs include correlation IDs and exclude secrets/raw idempotency keys (`JsonLoggingLayout` in `logback-spring.xml`).
+- [x] Metrics have bounded labels and include backlog/retry/failure signals (`PayRailMetrics`, `BacklogGauges`, `/actuator/prometheus`).
+- [x] Docker Compose health checks and `backend` profile work cleanly (`docker compose --profile app up`).
+- [x] CI runs required unit and Testcontainers integration tests (`.github/workflows/ci.yml`).
+- [x] End-to-end walkthrough passes from a clean checkout (143 tests passing).
+- [x] Documentation matches actual code and no unverified claims remain (`docs/API_CONTRACT.md`, `docs/DEPLOYMENT_AND_CI.md`).
 
 ## Phase 5 — Dashboard
 

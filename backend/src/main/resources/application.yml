@@ -46,10 +46,14 @@ management:
         liveness:
           include: livenessState
         readiness:
-          include: readinessState,db
+          include: readinessState,db,kafka
   metrics:
     tags:
       application: ${spring.application.name}
+  prometheus:
+    metrics:
+      export:
+        enabled: true
 
 # PayRail Simulator domain configurations
 payrail:

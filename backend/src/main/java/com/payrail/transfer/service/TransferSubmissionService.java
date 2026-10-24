@@ -47,6 +47,7 @@ public class TransferSubmissionService {
     private final TransferStatusHistoryRepository statusHistoryRepository;
     private final OutboxRepository outboxRepository;
     private final ObjectMapper objectMapper;
+    private com.payrail.config.PayRailMetrics metrics;
 
     public TransferSubmissionService(
             TransferRepository transferRepository,
@@ -62,6 +63,11 @@ public class TransferSubmissionService {
         this.statusHistoryRepository = statusHistoryRepository;
         this.outboxRepository = outboxRepository;
         this.objectMapper = objectMapper;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setMetrics(com.payrail.config.PayRailMetrics metrics) {
+        this.metrics = metrics;
     }
 
     @Transactional
@@ -167,6 +173,9 @@ public class TransferSubmissionService {
             outboxRepository.insert(outboxEvent);
 
             log.info("Submitted new transfer id={} [{}] amount={} {}", transferId, safeKey, amount, currency);
+            if (metrics != null) {
+                metrics.recordTransferSubmitted();
+            }
             return new TransferSubmissionResult(TransferResponse.fromRecord(pendingTransfer), false);
 
         } catch (DuplicateKeyException e) {
@@ -186,6 +195,9 @@ public class TransferSubmissionService {
         }
 
         log.info("Idempotent replay for transfer id={} [{}]", record.transferId(), safeKey);
+        if (metrics != null) {
+            metrics.recordIdempotentReplay();
+        }
         TransferRecord existingTransfer = transferRepository.findById(record.transferId())
                 .orElseThrow(() -> new IllegalStateException("Corrupt idempotency record pointing to missing transfer: " + record.transferId()));
 

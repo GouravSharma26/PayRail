@@ -49,3 +49,50 @@ Use least-privilege workflow permissions and pin action versions where practical
 Deployment is optional and comes only after local clean-checkout verification. A public environment must use disposable synthetic data, unique credentials, TLS at the platform edge, private database/broker network access, restricted actuator endpoints, and protected operational APIs. Display the simulator warning on every UI entry route and in the README. Do not expose unauthenticated account-creation, replay, reset, or reconciliation-trigger endpoints to arbitrary Internet users.
 
 Document the actual platform and actual tested steps only after a real deployment is verified. Do not fabricate a live URL, health status, uptime, or successful deployment.
+
+## Operational Runbook & Commands
+
+### 1. Starting Infrastructure (PostgreSQL + Kafka)
+```bash
+# Start PostgreSQL 16 and Kafka 3.8 (KRaft) containers:
+docker compose up -d
+
+# Verify health status:
+docker compose ps
+```
+
+### 2. Running Application Container
+```bash
+# Build and run full stack including containerized backend (profile: app):
+docker compose --profile app up -d --build
+
+# Or run locally via Maven:
+./mvnw spring-boot:run -pl backend
+```
+
+### 3. Operational Diagnostic APIs
+```bash
+# Health summary (overall status, DB, Kafka, outbox backlog, reconciliation):
+curl -s http://localhost:8080/api/v1/ops/health/summary | jq .
+
+# Outbox queue backlog telemetry:
+curl -s http://localhost:8080/api/v1/ops/outbox/status | jq .
+
+# Trigger immediate reconciliation audit scan:
+curl -s -X POST http://localhost:8080/api/v1/ops/reconciliation/trigger | jq .
+
+# List recent reconciliation audit runs:
+curl -s "http://localhost:8080/api/v1/ops/reconciliation/runs?limit=10" | jq .
+
+# Scrape Prometheus metrics:
+curl -s http://localhost:8080/actuator/prometheus | grep payrail_
+```
+
+### 4. Kubernetes / Container Probes
+- **Liveness probe**: `GET http://localhost:8080/actuator/health/liveness` (checks process progress)
+- **Readiness probe**: `GET http://localhost:8080/actuator/health/readiness` (checks `readinessState`, PostgreSQL, and Kafka connectivity)
+
+### 5. Logging Modes
+- **Human-readable console** (default): ISO-8601 timestamps, log level, thread name, `[cid:<correlationId>]`, logger, and message.
+- **Structured JSON logging** (`SPRING_PROFILES_ACTIVE=prod` or `json`): Machine-parseable single-line JSON with timestamps, level, thread, logger, MDC correlation ID, and exception payloads.
+

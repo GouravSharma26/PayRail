@@ -53,6 +53,7 @@ public class ReconciliationService {
     private final ReconciliationRunRepository runRepository;
     private final ReconciliationIssueRepository issueRepository;
     private final ObjectMapper objectMapper;
+    private com.payrail.config.PayRailMetrics metrics;
 
     @Value("${payrail.reconciliation.stale-processing-threshold:60s}")
     private Duration staleProcessingThreshold;
@@ -76,6 +77,11 @@ public class ReconciliationService {
         this.runRepository = runRepository;
         this.issueRepository = issueRepository;
         this.objectMapper = objectMapper;
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setMetrics(com.payrail.config.PayRailMetrics metrics) {
+        this.metrics = metrics;
     }
 
     /**
@@ -443,8 +449,24 @@ public class ReconciliationService {
             issueRepository.insertAll(issues);
         }
 
+        if (metrics != null) {
+            metrics.recordReconciliationRunCompleted();
+            if (!issues.isEmpty()) {
+                metrics.recordReconciliationIssuesDetected(issues.size());
+            }
+        }
+
         log.info("Completed reconciliation run id={} status={} issues={}", runId, runStatus, issues.size());
         return runRecord;
+    }
+
+    @Scheduled(fixedDelayString = "${payrail.reconciliation.interval:60s}")
+    public void scheduledAudit() {
+        try {
+            runAuditAndPersist("SCHEDULED");
+        } catch (Exception e) {
+            log.error("Scheduled reconciliation run failed: {}", e.getMessage(), e);
+        }
     }
 
     private String safeJson(Map<String, Object> map) {

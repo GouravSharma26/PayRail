@@ -422,6 +422,59 @@
 - **Known limitations:** None for Phase 3.
 - **Reviewer notes / follow-up:** Phase 3 recovery-sweep resilience correction complete. Verified on GitHub Actions CI. Ready for independent review.
 
+### 2026-10-25 — Phase 4: Operations and Observability
+
+- **Commit:** [`5a7049b`](https://github.com/GouravSharma26/PayRail/commit/5a7049b)
+- **Scope:** Implementation of production-grade operational readiness and observability: Spring Boot Actuator health and liveness/readiness probes (including dedicated PostgreSQL and Kafka connectivity verification), Micrometer application metrics and `/actuator/prometheus` scraping endpoint with bounded low-cardinality tags, operational REST API endpoints (`/api/v1/ops/health/summary`, `/api/v1/ops/outbox/status`, `/api/v1/ops/reconciliation/runs`, `/api/v1/ops/reconciliation/runs/{runId}`, `/api/v1/ops/reconciliation/trigger`), structured JSON logging for production via Logback, strict configuration validation via `@ConfigurationProperties` and JSR-303 annotations, multi-stage Eclipse Temurin 21 `Dockerfile` with non-root security context, and Docker Compose backend service orchestration under `app` and `all` profiles.
+- **Files changed:**
+  - `backend/src/main/java/com/payrail/PayRailApplication.java` (enabled `@EnableConfigurationProperties(PayRailProperties.class)`)
+  - `backend/src/main/java/com/payrail/config/PayRailProperties.java` (validated hierarchical properties bean for topics, outbox, processing, and reconciliation settings)
+  - `backend/src/main/java/com/payrail/config/KafkaHealthIndicator.java` (custom readiness probe checking Kafka broker cluster nodes within 5s bounded timeout)
+  - `backend/src/main/java/com/payrail/config/PayRailMetrics.java` (Micrometer metrics registry with bounded low-cardinality tags for transfers, consumer, outbox, sweeps, and reconciliation)
+  - `backend/src/main/java/com/payrail/config/BacklogGauges.java` (scheduled periodic gauge metrics for pending/failed/exhausted outbox backlogs and transfer statuses)
+  - `backend/src/main/java/com/payrail/ops/dto/OutboxStatusResponse.java` (DTO for outbox backlog, oldest unpublished event, and retry exhaustion metrics)
+  - `backend/src/main/java/com/payrail/ops/dto/ReconciliationRunDetailResponse.java` (DTO for detailed audit run inspection and persisted discrepancies)
+  - `backend/src/main/java/com/payrail/ops/dto/SystemHealthSummaryResponse.java` (DTO providing combined operational overview across components)
+  - `backend/src/main/java/com/payrail/ops/service/OpsService.java` (operational query and audit trigger orchestration)
+  - `backend/src/main/java/com/payrail/ops/controller/OpsController.java` (REST controller exposing `/api/v1/ops/*` endpoints)
+  - `backend/src/main/java/com/payrail/config/JsonLoggingLayout.java` & `backend/src/main/resources/logback-spring.xml` (structured single-line JSON logging for prod profile, human-readable for dev/test with MDC correlation IDs)
+  - `backend/src/main/java/com/payrail/transfer/service/TransferSubmissionService.java` (instrumented transfer submission and idempotent replay metrics)
+  - `backend/src/main/java/com/payrail/consumer/service/AsyncTransferProcessor.java` (instrumented processing duration timer, success, technical failure, and business decline counters)
+  - `backend/src/main/java/com/payrail/consumer/service/TransferCommandConsumer.java` (instrumented message received, malformed payload, and DLQ counter metrics)
+  - `backend/src/main/java/com/payrail/outbox/service/OutboxPublisherService.java` (instrumented outbox publish success, retry failure, and exhaustion metrics)
+  - `backend/src/main/java/com/payrail/consumer/service/ProcessingRecoveryService.java` (instrumented recovery sweep counter metrics)
+  - `backend/src/main/java/com/payrail/ledger/service/ReconciliationService.java` (instrumented continuous audit run and issue counter metrics)
+  - `backend/src/main/resources/application.yml` (configured health probe groups, Prometheus metric exporter, logback integration, and payrail config defaults)
+  - `backend/Dockerfile` (multi-stage non-root container build with Eclipse Temurin 21 JRE, curl healthcheck, and unprivileged user)
+  - `docker-compose.yml` (added `backend` container service under `app` and `all` profiles with environment variable mapping)
+  - `backend/src/test/java/com/payrail/config/PayRailPropertiesValidationTest.java` (7 unit tests verifying configuration constraints, defaults, and boundary validation)
+  - `backend/src/test/java/com/payrail/ops/OpsControllerIntegrationTest.java` (5 integration tests verifying health summary, outbox status, reconciliation history, run details, and manual audit trigger)
+  - `backend/src/test/java/com/payrail/actuator/HealthAndReadinessIntegrationTest.java` (3 integration tests verifying `/actuator/health`, `/actuator/health/liveness`, and `/actuator/health/readiness`)
+  - `backend/src/test/java/com/payrail/metrics/MetricsIntegrationTest.java` (1 integration test verifying Prometheus metric publication and PayRail custom metric meters)
+  - `docs/API_CONTRACT.md` (documented `/api/v1/ops/*` and `/actuator/*` endpoints and response schemas)
+  - `docs/DEPLOYMENT_AND_CI.md` (documented operational runbooks, Docker instructions, health endpoints, and Prometheus metrics)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (verified and checked off all Phase 4 items)
+  - `docs/PHASE_LOG.md` (recorded Phase 4 execution evidence)
+- **Design decision(s):**
+  - Exposed operational APIs at `/api/v1/ops/*` with read-only database queries and manual reconciliation trigger without permitting auto-repair or state mutation.
+  - Integrated Micrometer counters, timers, and gauges with bounded, low-cardinality tags (status, outcome, failureCode, reason). Avoided high-cardinality tags (transferId, accountId, idempotencyKey).
+  - Enforced structured JSON logging in production via `logback-spring.xml` and custom layout, preserving MDC `correlationId` while masking or omitting any sensitive financial or authentication payloads.
+  - Enforced strict startup fail-fast validation for configuration using `@Validated` and `@ConfigurationProperties`.
+  - Maintained container security with unprivileged `payrail` user (UID 10001) in multi-stage Docker build.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 143 tests run, 0 failures, 0 errors, 0 skipped in 37.922s
+- **Test results:** unit `40 passed / 0 failed`; integration `103 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (143 total tests passing).
+- **Acceptance criteria verified:**
+  - `/actuator/health`, `/actuator/health/liveness`, `/actuator/health/readiness` respond accurately; Kafka cluster and PostgreSQL database connectivity verified on readiness group.
+  - `/actuator/prometheus` exports standard JVM, Spring, and custom `payrail.*` metrics with bounded tags.
+  - Operational endpoints `/api/v1/ops/health/summary`, `/api/v1/ops/outbox/status`, `/api/v1/ops/reconciliation/runs`, and `/api/v1/ops/reconciliation/trigger` respond accurately with 200 OK.
+  - Multi-stage Dockerfile and Docker Compose profiles configure full synthetic payment pipeline.
+  - Startup validation fails cleanly on invalid configuration parameters.
+  - All 143 automated tests pass with 0 failures, regressions, or skips.
+- **Not verified / blocked:** Frontend operator dashboard (Phase 5).
+- **Known limitations:** None for Phase 4.
+- **Reviewer notes / follow-up:** Phase 4 complete. All gate criteria met and verified. Ready for independent review.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name

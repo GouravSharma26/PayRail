@@ -28,6 +28,7 @@ public class TransferCommandConsumer {
     private final ProcessedMessagesRepository processedMessagesRepository;
     private final TransactionTemplate transactionTemplate;
     private final ObjectMapper objectMapper;
+    private com.payrail.config.PayRailMetrics metrics;
 
     @Value("${payrail.topics.transfer-commands:payrail.transfer-commands.v1}")
     private String transferCommandsTopic;
@@ -46,12 +47,20 @@ public class TransferCommandConsumer {
         this.objectMapper = objectMapper;
     }
 
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setMetrics(com.payrail.config.PayRailMetrics metrics) {
+        this.metrics = metrics;
+    }
+
     @KafkaListener(
             topics = "${payrail.topics.transfer-commands:payrail.transfer-commands.v1}",
             groupId = "${spring.kafka.consumer.group-id:payrail-transfer-workers}",
             autoStartup = "${payrail.processing.consumer-enabled:true}"
     )
     public void onMessage(ConsumerRecord<String, String> record) {
+        if (metrics != null) {
+            metrics.recordConsumerEventReceived();
+        }
         String rawMessage = record.value();
         log.debug("Received message from topic={} partition={} offset={} key={}",
                 record.topic(), record.partition(), record.offset(), record.key());
@@ -62,6 +71,11 @@ public class TransferCommandConsumer {
         } catch (Exception e) {
             log.error("Failed to parse event envelope from topic {} partition {} offset {}: {}",
                     record.topic(), record.partition(), record.offset(), e.getMessage());
+
+            if (metrics != null) {
+                metrics.recordConsumerEventMalformed();
+                metrics.recordConsumerEventDlq();
+            }
 
             transactionTemplate.executeWithoutResult(status -> {
                 deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
@@ -80,6 +94,10 @@ public class TransferCommandConsumer {
 
         if (!envelope.isValid()) {
             log.warn("Invalid event envelope received with missing fields: {}", envelope);
+            if (metrics != null) {
+                metrics.recordConsumerEventMalformed();
+                metrics.recordConsumerEventDlq();
+            }
             transactionTemplate.executeWithoutResult(status -> {
                 deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
                         record.topic(),
@@ -106,6 +124,10 @@ public class TransferCommandConsumer {
         if (envelope.schemaVersion() != EventEnvelope.CURRENT_SCHEMA_VERSION) {
             log.warn("Unsupported event schema version {} (expected {}) on event id={}",
                     envelope.schemaVersion(), EventEnvelope.CURRENT_SCHEMA_VERSION, envelope.eventId());
+            if (metrics != null) {
+                metrics.recordConsumerEventMalformed();
+                metrics.recordConsumerEventDlq();
+            }
             transactionTemplate.executeWithoutResult(status -> {
                 deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
                         record.topic(),

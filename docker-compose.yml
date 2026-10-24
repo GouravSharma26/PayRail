@@ -48,6 +48,29 @@ services:
       retries: 10
       start_period: 10s
 
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: payrail-backend
+    profiles: ["app", "all"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/payrail_db
+      SPRING_DATASOURCE_USERNAME: payrail_user
+      SPRING_DATASOURCE_PASSWORD: payrail_secret
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: broker:29092
+      SPRING_PROFILES_ACTIVE: dev
+      LOG_LEVEL_COM_PAYRAIL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+      broker:
+        condition: service_healthy
+
 volumes:
   postgres_data:
   kafka_data:
+

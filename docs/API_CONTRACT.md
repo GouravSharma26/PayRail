@@ -152,3 +152,67 @@ Expose only intended actuator endpoints. Do not expose environment/configuration
 - `500/503`: unexpected service failure or unavailable dependency; do not tell the caller a transfer failed if its durable state is unknown. Encourage querying by idempotency key/retrying the same key.
 
 Document the final choice in OpenAPI and tests. Avoid returning `200` to mean async work is completed.
+
+## Operational and observability endpoints (`/api/v1/ops` & `/actuator`)
+
+### `GET /ops/reconciliation/runs`
+List recent reconciliation audit runs ordered by finished timestamp descending.
+Query parameter: `limit` (int, default 20, max 100).
+Response `200 OK`: Array of `ReconciliationRunRecord`:
+```json
+[
+  {
+    "id": "b0f8cdd2-5b4d-4562-bdf4-f5111e8352f6",
+    "startedAt": "2026-10-25T00:54:29.910Z",
+    "finishedAt": "2026-10-25T00:54:29.929Z",
+    "status": "CLEAN",
+    "scannedTransfersCount": 0,
+    "scannedAccountsCount": 0,
+    "issueCount": 0,
+    "triggerType": "MANUAL_API_TRIGGER",
+    "summary": "Scanned 0 transfers, 0 accounts; detected 0 issues."
+  }
+]
+```
+
+### `GET /ops/reconciliation/runs/{runId}`
+Fetch detailed execution results and all detected discrepancy issues for a specific run.
+Response: `200 OK` with run record and issue list, or `404 Not Found`.
+
+### `POST /ops/reconciliation/trigger`
+Triggers an immediate audit scan across ledger double-entry balance, account projection consistency, currency validation, stale outbox backlog, and retry-exhausted transfers. Durably records findings and returns the run record (`200 OK`).
+
+### `GET /ops/outbox/status`
+Returns outbox publisher queue backlog telemetry:
+```json
+{
+  "pendingCount": 0,
+  "failedCount": 0,
+  "exhaustedCount": 0,
+  "totalUnpublished": 0,
+  "oldestUnpublishedAgeSeconds": null,
+  "publisherEnabled": true
+}
+```
+
+### `GET /ops/health/summary`
+Combined operational diagnostic status:
+```json
+{
+  "status": "UP",
+  "dbStatus": "UP",
+  "kafkaStatus": "UP",
+  "outboxBacklog": 0,
+  "lastReconciliationStatus": "CLEAN",
+  "lastReconciliationTime": "2026-10-25T00:54:29.929Z",
+  "openReconciliationIssues": 0,
+  "timestamp": "2026-10-25T00:54:30.000Z"
+}
+```
+
+### Actuator endpoints
+- `GET /actuator/health`: System health with DB and Kafka status.
+- `GET /actuator/health/liveness`: Container liveness probe (`livenessState`).
+- `GET /actuator/health/readiness`: Container readiness probe (`readinessState`, `db`, `kafka`).
+- `GET /actuator/prometheus`: Prometheus scrape endpoint with custom `payrail_*` metrics.
+

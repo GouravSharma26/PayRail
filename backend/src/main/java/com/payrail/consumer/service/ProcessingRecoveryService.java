@@ -69,6 +69,13 @@ public class ProcessingRecoveryService {
         this.objectMapper = objectMapper;
     }
 
+    private com.payrail.config.PayRailMetrics metrics;
+
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    public void setMetrics(com.payrail.config.PayRailMetrics metrics) {
+        this.metrics = metrics;
+    }
+
     @Scheduled(fixedDelayString = "${payrail.processing.recovery-sweep-interval:15s}")
     public int scheduledSweep() {
         if (!recoverySweepEnabled) {
@@ -82,6 +89,9 @@ public class ProcessingRecoveryService {
      * and orphaned pending transfers. Can be called directly by scheduler, tests, or ops.
      */
     public int runRecoverySweep() {
+        if (metrics != null) {
+            metrics.recordRecoverySweepRun();
+        }
         int totalRecovered = 0;
         totalRecovered += sweepStaleProcessingLeases();
         totalRecovered += sweepStaleOutboxLeases();
@@ -104,10 +114,16 @@ public class ProcessingRecoveryService {
                 Boolean result = transactionTemplate.execute(status -> recoverStaleTransfer(stale.id()));
                 if (Boolean.TRUE.equals(result)) {
                     recovered++;
+                    if (metrics != null) {
+                        metrics.recordRecoveryCandidateProcessed();
+                    }
                 }
             } catch (Exception e) {
                 log.error("Failed to recover stale processing lease for transfer id={} [{}]: {}",
                         stale.id(), e.getClass().getSimpleName(), e.getMessage(), e);
+                if (metrics != null) {
+                    metrics.recordRecoveryCandidateFailed();
+                }
                 // Individual recovery failure rolls back that candidate's complete transaction and does not abort remaining candidates
             }
         }

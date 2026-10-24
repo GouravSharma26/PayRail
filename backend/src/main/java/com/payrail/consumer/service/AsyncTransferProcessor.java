@@ -96,6 +96,13 @@ public class AsyncTransferProcessor {
         this.objectMapper = objectMapper;
     }
 
+    private com.payrail.config.PayRailMetrics metrics;
+
+    @Autowired(required = false)
+    public void setMetrics(com.payrail.config.PayRailMetrics metrics) {
+        this.metrics = metrics;
+    }
+
     @Autowired(required = false)
     public void setFailureInjector(AsyncProcessingFailureInjector failureInjector) {
         this.failureInjector = failureInjector != null
@@ -126,6 +133,9 @@ public class AsyncTransferProcessor {
         // 1. Consumer Deduplication Check
         if (processedMessagesRepository.exists(CONSUMER_NAME, eventId)) {
             log.info("Duplicate event id={} already processed by consumer={}; skipping.", eventId, CONSUMER_NAME);
+            if (metrics != null) {
+                metrics.recordConsumerEventDeduplicated();
+            }
             return;
         }
 
@@ -134,6 +144,9 @@ public class AsyncTransferProcessor {
             transferId = UUID.fromString(envelope.payload().get("transferId").asText());
         } catch (Exception e) {
             log.error("Event id={} missing valid transferId in payload: {}", eventId, envelope.payload());
+            if (metrics != null) {
+                metrics.recordConsumerEventDlq();
+            }
             transactionTemplate.executeWithoutResult(status -> {
                 deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
                         transferCommandsTopic,
@@ -189,6 +202,7 @@ public class AsyncTransferProcessor {
 
         // 3. Execution step
         Instant startTime = Instant.now();
+        io.micrometer.core.instrument.Timer.Sample sample = metrics != null ? metrics.startProcessingTimer() : null;
         try {
             transactionTemplate.executeWithoutResult(status ->
                     executePosting(transferId, claimToken, claim.attemptNumber(), envelope, startTime)
@@ -202,6 +216,10 @@ public class AsyncTransferProcessor {
                 failureInjector.inRetryStateTransaction(transferId, claim.attemptNumber());
                 handleTechnicalFailure(transferId, claimToken, claim.attemptNumber(), envelope, e, startTime);
             });
+        } finally {
+            if (metrics != null && sample != null) {
+                metrics.stopProcessingTimer(sample);
+            }
         }
     }
 
@@ -348,6 +366,9 @@ public class AsyncTransferProcessor {
 
         // Mark transfer SUCCEEDED and clear lease
         transferRepository.completeProcessing(transferId, TransferStatus.SUCCEEDED, null, null, now, now);
+        if (metrics != null) {
+            metrics.recordTransferSucceeded();
+        }
 
         // Record status history
         statusHistoryRepository.insert(new TransferStatusHistoryRecord(
@@ -400,6 +421,9 @@ public class AsyncTransferProcessor {
         }
 
         transferRepository.completeProcessing(transfer.id(), TransferStatus.FAILED, errorCode, safeMessage, now, now);
+        if (metrics != null) {
+            metrics.recordTransferBusinessDeclined();
+        }
 
         statusHistoryRepository.insert(new TransferStatusHistoryRecord(
                 null,
@@ -535,6 +559,10 @@ public class AsyncTransferProcessor {
                     "RETRY_SCHEDULED"
             ));
 
+            if (metrics != null) {
+                metrics.recordConsumerEventRetried();
+            }
+
             log.info("Scheduled durable retry for transfer id={} [attempt={}] availableAt={}",
                     transferId, attemptNumber + 1, retryAvailableAt);
 
@@ -548,6 +576,10 @@ public class AsyncTransferProcessor {
                     now,
                     now
             );
+            if (metrics != null) {
+                metrics.recordTransferFailed();
+                metrics.recordConsumerEventDlq();
+            }
 
             processingAttemptRepository.updateOutcome(
                     transferId,
