@@ -115,7 +115,7 @@
 
 ### 2026-10-24 — Phase 2: Ledger, Consistency, and Concurrency
 
-- **Commit:** pending commit
+- **Commit:** `4c0015a`
 - **Scope:** Implementation of immutable double-entry ledger, atomic transfer posting service, deterministic row locking for deadlock avoidance, balance projection maintenance, Flyway V2 immutability triggers, continuous reconciliation audit service, and high-concurrency race condition and deadlock elimination tests.
 - **Files changed:**
   - `backend/src/main/resources/db/migration/V2__ledger_immutability_and_triggers.sql` (PostgreSQL triggers preventing UPDATE or DELETE on ledger_entries and transfer_status_history, plus composite index)
