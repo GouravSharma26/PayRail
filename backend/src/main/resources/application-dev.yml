@@ -2,6 +2,8 @@
 payrail:
   seed:
     enabled: true
+  processing:
+    manual-endpoint-enabled: true
 
 logging:
   level:

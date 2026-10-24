@@ -40,6 +40,33 @@ Record actual final choices and verification date during Phase 0. These are prop
 5. Ledger rows are strictly immutable and append-only, enforced by database triggers preventing `UPDATE` and `DELETE` on `ledger_entries`.
 6. Account balances and ledger entries are continuously auditable via reconciliation queries verifying `current_balance = opening_balance - SUM(debits) + SUM(credits)`.
 
+## ADR-011 — PostgreSQL Deferred Constraint Triggers for Ledger Invariants, Error Classification, Dev Endpoint Isolation, and Phase 2 State Transitions
+**Context:**
+A technical review of Phase 2 identified 5 key areas for remediation:
+1. Enforcing accounting ledger invariants at database commit level independent of application code.
+2. Clarifying transfer state transitions (`PENDING -> SUCCEEDED`/`FAILED`) for the synchronous Phase 2 posting path vs the future Phase 3 asynchronous worker lifecycle.
+3. Strengthening full reconciliation to audit all ledger-to-transfer relationships (accounts, amounts, currencies, orphan legs) and balance consistency without auto-repair.
+4. Restricting the manual posting endpoint `POST /api/v1/transfers/{transferId}/process` to explicit development/test profiles (`payrail.processing.manual-endpoint-enabled=true`) while keeping it disabled (404) in production runtime.
+5. Correcting PostgreSQL immutability error classification from `23505` (`unique_violation`) to `23514` (`check_violation` / `DataIntegrityViolationException`).
+
+**Decisions:**
+1. **Deferred Constraint Triggers (Finding 1):** Flyway migration `V3__ledger_invariant_deferred_triggers.sql` adds PostgreSQL deferred constraint triggers `trg_transfer_ledger_invariants_transfers` and `trg_transfer_ledger_invariants_ledger` backed by `check_transfer_ledger_invariants()`. Configured as `DEFERRABLE INITIALLY DEFERRED FOR EACH ROW`, these triggers allow multi-statement transactions to insert/update rows in any order and evaluate the final committed state at transaction `COMMIT`. At commit, they verify:
+   - A `SUCCEEDED` transfer has exactly 2 ledger entries: one `DEBIT` and one `CREDIT`.
+   - The `DEBIT` leg belongs to `transfer.source_account_id`, matches transfer amount, and matches transfer currency.
+   - The `CREDIT` leg belongs to `transfer.destination_account_id`, matches transfer amount, and matches transfer currency.
+   - Non-`SUCCEEDED` transfers (`PENDING`, `PROCESSING`, `FAILED`) have strictly 0 ledger entries.
+   - Any violation aborts the transaction with SQLSTATE `23514` (`check_violation`).
+2. **Phase 2 Transfer State Lifecycle (Finding 2):** In Phase 2, `TransferPostingService` executes synchronously on the calling thread, transitioning `PENDING -> SUCCEEDED` or `PENDING -> FAILED` atomically with balance updates and ledger entries. As documented in the Phase 2 contract, persisting an intermediate `PROCESSING` state across separate transactions without an active crash recovery worker (such as the Phase 3 Kafka lease manager) would leave transfers stranded in `PROCESSING` if a crash occurred before posting. Therefore, direct posting is explicitly documented as the synchronous Phase 2 path, which Phase 3 will supersede with durable worker leases and heartbeat-driven recovery.
+3. **Hardened Full Reconciliation (Finding 3):** `ReconciliationService.runFullAudit()` performs a comprehensive, read-only audit verifying:
+   - Account balances match synthetic opening balance plus net ledger activity (`current_balance == opening_balance - debits + credits`).
+   - Every `SUCCEEDED` transfer has exactly one debit and one credit leg.
+   - Legs map to the exact `source_account_id` and `destination_account_id`.
+   - Leg amounts and currencies match the transfer and account currencies.
+   - Zero ledger entries exist for non-`SUCCEEDED` transfers.
+   - Discrepancies are reported in `ReconciliationReport` without performing silent auto-repairs.
+4. **Development Endpoint Isolation (Finding 4):** `POST /api/v1/transfers/{transferId}/process` is moved out of the public `TransferController` and into `DevTransferProcessingController`, guarded by `@ConditionalOnProperty(prefix = "payrail.processing", name = "manual-endpoint-enabled", havingValue = "true")`. Enabled only in dev/test profiles (`application-dev.yml` and `application-test.yml`), it is absent (returning HTTP 404) in default production configurations.
+5. **Database Error Classification (Finding 5):** The immutability triggers in `V2__ledger_immutability_and_triggers.sql` use SQLSTATE `23514` (`check_violation`), which Spring translates to `DataIntegrityViolationException`, preventing misclassification as `DuplicateKeyException` (which would trigger retry/replay logic).
+
 ## Exact version record (verified 2026-10-24)
 
 | Component | Pinned version/tag | Compatibility verified against | Official source | Date |

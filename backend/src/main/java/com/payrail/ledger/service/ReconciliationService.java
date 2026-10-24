@@ -176,6 +176,71 @@ public class ReconciliationService {
         );
         discrepancies.addAll(illegalLedgerTransfers);
 
+        // 5. Check DEBIT account mapping (must equal transfer.source_account_id)
+        String debitAccountMismatchSql = """
+                SELECT l.transfer_id, l.account_id AS ledger_account, t.source_account_id AS expected_account
+                FROM ledger_entries l
+                JOIN transfers t ON l.transfer_id = t.id
+                WHERE l.leg = 'DEBIT' AND l.account_id <> t.source_account_id
+                """;
+        List<String> debitMismatches = jdbcTemplate.query(debitAccountMismatchSql, new MapSqlParameterSource(), (rs, rowNum) ->
+                String.format("Transfer %s DEBIT account mismatch: ledger_account=%s, expected_source=%s",
+                        rs.getString("transfer_id"), rs.getString("ledger_account"), rs.getString("expected_account"))
+        );
+        discrepancies.addAll(debitMismatches);
+
+        // 6. Check CREDIT account mapping (must equal transfer.destination_account_id)
+        String creditAccountMismatchSql = """
+                SELECT l.transfer_id, l.account_id AS ledger_account, t.destination_account_id AS expected_account
+                FROM ledger_entries l
+                JOIN transfers t ON l.transfer_id = t.id
+                WHERE l.leg = 'CREDIT' AND l.account_id <> t.destination_account_id
+                """;
+        List<String> creditMismatches = jdbcTemplate.query(creditAccountMismatchSql, new MapSqlParameterSource(), (rs, rowNum) ->
+                String.format("Transfer %s CREDIT account mismatch: ledger_account=%s, expected_destination=%s",
+                        rs.getString("transfer_id"), rs.getString("ledger_account"), rs.getString("expected_account"))
+        );
+        discrepancies.addAll(creditMismatches);
+
+        // 7. Check leg amount matching transfer amount
+        String amountMismatchSql = """
+                SELECT l.transfer_id, l.leg, l.amount AS ledger_amount, t.amount AS transfer_amount
+                FROM ledger_entries l
+                JOIN transfers t ON l.transfer_id = t.id
+                WHERE l.amount <> t.amount
+                """;
+        List<String> amountMismatches = jdbcTemplate.query(amountMismatchSql, new MapSqlParameterSource(), (rs, rowNum) ->
+                String.format("Transfer %s %s amount mismatch: ledger=%s, transfer=%s",
+                        rs.getString("transfer_id"), rs.getString("leg"), rs.getBigDecimal("ledger_amount"), rs.getBigDecimal("transfer_amount"))
+        );
+        discrepancies.addAll(amountMismatches);
+
+        // 8. Check currency matching between ledger and transfer
+        String currencyMismatchSql = """
+                SELECT l.transfer_id, l.currency AS ledger_currency, t.currency AS transfer_currency
+                FROM ledger_entries l
+                JOIN transfers t ON l.transfer_id = t.id
+                WHERE l.currency <> t.currency
+                """;
+        List<String> currencyMismatches = jdbcTemplate.query(currencyMismatchSql, new MapSqlParameterSource(), (rs, rowNum) ->
+                String.format("Transfer %s currency mismatch: ledger=%s, transfer=%s",
+                        rs.getString("transfer_id"), rs.getString("ledger_currency"), rs.getString("transfer_currency"))
+        );
+        discrepancies.addAll(currencyMismatches);
+
+        // 9. Check currency matching between ledger entry and account currency
+        String accountCurrencyMismatchSql = """
+                SELECT l.id AS entry_id, l.currency AS ledger_currency, a.currency AS account_currency
+                FROM ledger_entries l
+                JOIN accounts a ON l.account_id = a.id
+                WHERE l.currency <> a.currency
+                """;
+        List<String> accountCurrencyMismatches = jdbcTemplate.query(accountCurrencyMismatchSql, new MapSqlParameterSource(), (rs, rowNum) ->
+                String.format("Ledger entry %s currency mismatch with account: ledger=%s, account=%s",
+                        rs.getString("entry_id"), rs.getString("ledger_currency"), rs.getString("account_currency"))
+        );
+        discrepancies.addAll(accountCurrencyMismatches);
+
         Long totalAccounts = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM accounts", new MapSqlParameterSource(), Long.class);
         Long totalTransfers = jdbcTemplate.queryForObject("SELECT COUNT(*) FROM transfers", new MapSqlParameterSource(), Long.class);
         Long totalLedgerEntries = ledgerRepository.countTotalEntries();

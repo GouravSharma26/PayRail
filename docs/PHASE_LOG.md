@@ -159,6 +159,45 @@
 - **Known limitations:** Outbox event records are persisted at transfer submission but background asynchronous polling and Kafka publishing will be wired in Phase 3.
 - **Reviewer notes / follow-up:** Phase 2 complete. Ready for Phase 2 review and gate approval.
 
+### 2026-10-24 — Phase 2: Technical Review Remediation
+
+- **Commit:** `ba27e3f`
+- **Scope:** Technical review remediation addressing Findings 1–5: PostgreSQL deferred constraint triggers for ledger invariants, state-transition contract clarification, hardened full reconciliation audit, dev-only manual processing endpoint isolation, and PostgreSQL trigger error code classification.
+- **Files changed:**
+  - `backend/src/main/resources/db/migration/V2__ledger_immutability_and_triggers.sql` (corrected error code to SQLSTATE 23514 check_violation)
+  - `backend/src/main/resources/db/migration/V3__ledger_invariant_deferred_triggers.sql` (added PostgreSQL deferred constraint triggers trg_transfer_ledger_invariants_transfers and trg_transfer_ledger_invariants_ledger)
+  - `backend/src/main/resources/application.yml` (added default payrail.processing.manual-endpoint-enabled: false)
+  - `backend/src/main/resources/application-dev.yml` (enabled manual-endpoint-enabled: true for dev)
+  - `backend/src/main/resources/application-test.yml` (enabled manual-endpoint-enabled: true for tests)
+  - `backend/src/main/java/com/payrail/transfer/controller/DevTransferProcessingController.java` (dev/test-only controller for manual posting, guarded by @ConditionalOnProperty)
+  - `backend/src/main/java/com/payrail/transfer/controller/TransferController.java` (removed manual posting endpoint from public production controller)
+  - `backend/src/main/java/com/payrail/ledger/service/ReconciliationService.java` (hardened full reconciliation checking accounts, currencies, amounts, and orphan legs)
+  - `backend/src/test/java/com/payrail/FlywayMigrationIntegrationTest.java` (verified V1, V2, and V3 migrations and constraint triggers)
+  - `backend/src/test/java/com/payrail/DevTransferProcessingControllerTest.java` (verified POST /api/v1/transfers/{id}/process works when enabled)
+  - `backend/src/test/java/com/payrail/DevTransferProcessingControllerDisabledIntegrationTest.java` (verified POST /api/v1/transfers/{id}/process returns 404 when disabled)
+  - `backend/src/test/java/com/payrail/PostgresLedgerInvariantTriggerIntegrationTest.java` (direct SQL tests verifying PostgreSQL deferred triggers reject invalid ledger states at commit, and verifying SQLSTATE 23514 error classification)
+  - `backend/src/test/java/com/payrail/ReconciliationIntegrationTest.java` (negative audit tests with corrupted fixtures verifying detection of account mismatch, amount mismatch, currency mismatch, and balance discrepancies)
+  - `backend/src/test/java/com/payrail/LedgerPostingIntegrationTest.java` (enhanced status history verification for success, decline, duplicate posting, and atomic rollback)
+  - `docs/DOMAIN_MODEL.md` (documented Phase 2 direct posting path vs Phase 3 async worker lifecycle)
+  - `docs/MODEL_AND_TECH_DECISIONS.md` (recorded ADR-011)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (verified checklist items)
+  - `docs/PHASE_LOG.md` (recorded remediation evidence)
+- **Design decision(s):**
+  - ADR-011: PostgreSQL deferred constraint triggers evaluate double-entry ledger invariants at database commit. Direct posting is the synchronous Phase 2 path (avoiding unmanaged intermediate PROCESSING state until Phase 3 lease manager is introduced). Dev processing endpoint is isolated and disabled in production. Immutability triggers emit 23514 check_violation.
+- **Commands run:**
+  - `.\mvnw.cmd test` — PASS, 77 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 18.597s, 77 tests run, 0 failures, 0 errors, 0 skipped; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+- **Test results:** unit `33 passed / 0 failed`; integration `44 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (77 total tests passing).
+- **Acceptance criteria verified:**
+  - Finding 1: Deferred constraint triggers reject committing SUCCEEDED transfers without balanced entries, reject non-SUCCEEDED transfers with entries, reject mismatched accounts, amounts, or currencies directly at SQL commit.
+  - Finding 2: Direct posting path clearly documented; transfer state, history, ledger entries, and balances proven consistent for success, decline, duplicate posting, and rollback.
+  - Finding 3: Full reconciliation audit detects account mismatches, currency mismatches, amount mismatches, and balance discrepancies without modifying records.
+  - Finding 4: Manual processing endpoint is disabled by default (returns 404) and enabled only via explicit configuration in dev/test profiles.
+  - Finding 5: Immutability triggers throw SQLSTATE 23514, translated to DataIntegrityViolationException and never misclassified as DuplicateKeyException.
+- **Not verified / blocked:** Phase 3 Kafka event publishing, DLQ, consumer claiming, and background lease recovery.
+- **Known limitations:** As planned, asynchronous Kafka consumer claiming is deferred to Phase 3.
+- **Reviewer notes / follow-up:** Phase 2 remediation complete. Waiting at Phase 2 gate for second review approval.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name

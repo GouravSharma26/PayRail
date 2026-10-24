@@ -134,6 +134,13 @@ class LedgerPostingIntegrationTest extends BaseIntegrationTest {
         assertThat(updatedTransfer.status()).isEqualTo(TransferStatus.FAILED);
         assertThat(updatedTransfer.failureCode()).isEqualTo("INSUFFICIENT_FUNDS");
 
+        // Verify audit history reflects PENDING -> FAILED transition
+        List<TransferStatusHistoryRecord> history = historyRepository.findByTransferId(transferId);
+        assertThat(history).hasSize(1);
+        assertThat(history.get(0).fromStatus()).isEqualTo(TransferStatus.PENDING);
+        assertThat(history.get(0).toStatus()).isEqualTo(TransferStatus.FAILED);
+        assertThat(history.get(0).reasonCode()).isEqualTo("INSUFFICIENT_FUNDS");
+
         // Reconciliation remains balanced
         ReconciliationReport report = reconciliationService.runFullAudit();
         assertThat(report.isBalanced()).isTrue();
@@ -240,6 +247,13 @@ class LedgerPostingIntegrationTest extends BaseIntegrationTest {
         // Exactly two ledger entries exist
         List<LedgerEntryRecord> entries = ledgerRepository.findByTransferId(transferId);
         assertThat(entries).hasSize(2);
+
+        // Exactly one status transition record exists (PENDING -> SUCCEEDED)
+        List<TransferStatusHistoryRecord> history = historyRepository.findByTransferId(transferId);
+        assertThat(history).hasSize(1);
+        assertThat(history.get(0).fromStatus()).isEqualTo(TransferStatus.PENDING);
+        assertThat(history.get(0).toStatus()).isEqualTo(TransferStatus.SUCCEEDED);
+        assertThat(history.get(0).reasonCode()).isEqualTo("TRANSFER_POSTED");
     }
 
     @Test
@@ -274,6 +288,10 @@ class LedgerPostingIntegrationTest extends BaseIntegrationTest {
 
             TransferRecord transfer = transferRepository.findById(transferId).orElseThrow();
             assertThat(transfer.status()).isEqualTo(TransferStatus.PENDING);
+
+            // History table must be completely empty for this transfer due to atomic rollback
+            List<TransferStatusHistoryRecord> history = historyRepository.findByTransferId(transferId);
+            assertThat(history).isEmpty();
         } finally {
             // Reset injector to clean state
             postingService.setFailureInjector(PostingFailureInjector.noop());

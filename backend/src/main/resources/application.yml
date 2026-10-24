@@ -67,6 +67,7 @@ payrail:
     poll-interval: ${PAYRAIL_OUTBOX_POLL_INTERVAL:500ms}
     max-retries: ${PAYRAIL_OUTBOX_MAX_RETRIES:5}
   processing:
+    manual-endpoint-enabled: ${PAYRAIL_PROCESSING_MANUAL_ENDPOINT_ENABLED:false}
     lease-duration: ${PAYRAIL_PROCESSING_LEASE_DURATION:30s}
     max-attempts: ${PAYRAIL_PROCESSING_MAX_ATTEMPTS:5}
     initial-backoff: ${PAYRAIL_PROCESSING_INITIAL_BACKOFF:1s}

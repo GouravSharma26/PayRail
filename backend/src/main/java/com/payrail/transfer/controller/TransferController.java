@@ -40,16 +40,10 @@ public class TransferController {
 
     private final TransferSubmissionService submissionService;
     private final TransferQueryService queryService;
-    private final com.payrail.ledger.service.TransferPostingService postingService;
 
-    public TransferController(
-            TransferSubmissionService submissionService,
-            TransferQueryService queryService,
-            com.payrail.ledger.service.TransferPostingService postingService
-    ) {
+    public TransferController(TransferSubmissionService submissionService, TransferQueryService queryService) {
         this.submissionService = submissionService;
         this.queryService = queryService;
-        this.postingService = postingService;
     }
 
     @PostMapping
@@ -79,19 +73,6 @@ public class TransferController {
             return ResponseEntity.ok(result.transfer());
         }
         return ResponseEntity.status(HttpStatus.ACCEPTED).body(result.transfer());
-    }
-
-    @PostMapping("/{transferId}/process")
-    @Operation(summary = "Post transfer to double-entry ledger", description = "Executes atomic double-entry ledger posting and balance updates for an accepted transfer.")
-    @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Transfer processed (inspect status in body: SUCCEEDED or FAILED)"),
-            @ApiResponse(responseCode = "404", description = "Transfer not found")
-    })
-    public ResponseEntity<TransferResponse> processTransfer(
-            @Parameter(description = "Transfer UUID") @PathVariable UUID transferId
-    ) {
-        postingService.postTransfer(transferId);
-        return ResponseEntity.ok(queryService.getTransfer(transferId));
     }
 
     @GetMapping("/{transferId}")

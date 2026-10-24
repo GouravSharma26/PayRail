@@ -66,6 +66,7 @@ Rules:
 - New transfer starts `PENDING` only after the submission transaction commits.
 - `SUCCEEDED` and `FAILED` are terminal.
 - No direct transition from `PENDING` to `SUCCEEDED` that bypasses ledger posting.
+- **Phase 2 vs. Phase 3 Lifecycle:** In Phase 2 synchronous manual/dev posting (`TransferPostingService`), transfers transition directly from `PENDING` to `SUCCEEDED` or `FAILED` within a single atomic database transaction. Storing an intermediate `PROCESSING` state across separate database transactions in Phase 2 would create crash hazards where an uncompleted transfer could remain permanently in `PROCESSING` without recovery workers active. Phase 3 supersedes this by introducing Kafka consumer worker claiming (`PENDING -> PROCESSING`), durable attempt records, lease heartbeats, and background lease recovery.
 - `FAILED` due to a business decline has no transfer ledger postings.
 - A technical failure can retry only within a configured bounded attempt count and backoff policy. After exhaustion, store a stable technical failure code and make the event visible to operators.
 - Reprocessing a terminal transfer is a no-op with an audit/metric signal; it must never create a second pair of ledger entries.
