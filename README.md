@@ -28,35 +28,35 @@ PayRail models a production-grade, distributed payment processing architecture a
 
 ```mermaid
 flowchart TB
-    subgraph ClientLayer [Client & Operations Interface]
-        WebUI["React 19 + TypeScript Operations Dashboard<br/>(Vite, Strict Decimal Display, Bounded Polling)"]
-        APIClient["API Clients / Automated Scripts<br/>(cURL, Integration Test Runners)"]
+    subgraph ClientLayer [Client and Operations Interface]
+        WebUI["React 19 and TypeScript Operations Dashboard<br/>Vite, Strict Decimal Display, Bounded Polling"]
+        APIClient["API Clients and Automated Scripts<br/>cURL, Integration Test Runners"]
     end
 
     subgraph BackendLayer [Spring Boot 3.4 Application Modular Monolith]
-        RESTController["REST API Controllers<br/>(/api/v1/accounts, /transfers, /ops)"]
-        TransferService["Transfer Submission Service<br/>(Idempotency Hashing & Atomic Outbox Write)"]
-        OutboxWorker["Transactional Outbox Publisher<br/>(Leased Claiming, Bounded Retries)"]
-        EventConsumer["Payment Command Consumer<br/>(Claim-Fenced Execution & Deduplication)"]
-        LedgerProcessor["Ledger & Posting Engine<br/>(Deterministic UUID Locking, Atomic Double-Entry)"]
-        ReconciliationEngine["Continuous Reconciliation Engine<br/>(Audit Scans & Non-Mutating Discrepancy Reports)"]
-        HealthProbes["Spring Actuator & Micrometer<br/>(/health, /prometheus, JSON Logging)"]
+        RESTController["REST API Controllers<br/>/api/v1/accounts, /transfers, /ops"]
+        TransferService["Transfer Submission Service<br/>Idempotency Hashing and Atomic Outbox Write"]
+        OutboxWorker["Transactional Outbox Publisher<br/>Leased Claiming, Bounded Retries"]
+        EventConsumer["Payment Command Consumer<br/>Claim-Fenced Execution and Deduplication"]
+        LedgerProcessor["Ledger and Posting Engine<br/>Deterministic UUID Locking, Atomic Double-Entry"]
+        ReconciliationEngine["Continuous Reconciliation Engine<br/>Audit Scans and Non-Mutating Discrepancy Reports"]
+        HealthProbes["Spring Actuator and Micrometer<br/>health, prometheus, JSON Logging"]
     end
 
-    subgraph StorageLayer [Authoritative State & Transport]
-        PostgresDB[("PostgreSQL 16 Authoritative Store<br/>- Accounts & Balances (CHECK current_balance >= 0)<br/>- Transfers & Status History<br/>- Append-Only Double-Entry Ledger<br/>- Transactional Outbox & Idempotency Records<br/>- Reconciliation Runs & Audit Issues")]
-        KafkaBroker[("Apache Kafka 3.8 Broker (KRaft Mode)<br/>- payrail.transfer-commands.v1<br/>- payrail.transfer-commands.dlq.v1")]
+    subgraph StorageLayer [Authoritative State and Transport]
+        PostgresDB[("PostgreSQL 16 Authoritative Store<br/>Accounts and Balances with Non-Negative Check<br/>Transfers and Status History<br/>Append-Only Double-Entry Ledger<br/>Transactional Outbox and Idempotency Records<br/>Reconciliation Runs and Audit Issues")]
+        KafkaBroker[("Apache Kafka 3.8 Broker in KRaft Mode<br/>payrail.transfer-commands.v1<br/>payrail.transfer-commands.dlq.v1")]
     end
 
-    WebUI -->|HTTP / JSON (Proxied)| RESTController
-    APIClient -->|HTTP / JSON + Idempotency-Key| RESTController
+    WebUI -->|HTTP and JSON Proxied| RESTController
+    APIClient -->|HTTP and JSON with Idempotency-Key| RESTController
     RESTController --> TransferService
     TransferService -->|Atomic Write| PostgresDB
     OutboxWorker -->|Leased Claim| PostgresDB
     OutboxWorker -->|Publish Event| KafkaBroker
     KafkaBroker -->|Consume Event| EventConsumer
     EventConsumer --> LedgerProcessor
-    LedgerProcessor -->|SELECT ... FOR UPDATE & Atomic Commit| PostgresDB
+    LedgerProcessor -->|Row Lock and Atomic Commit| PostgresDB
     ReconciliationEngine -->|Read-Only Invariant Scans| PostgresDB
     RESTController --> ReconciliationEngine
     RESTController --> HealthProbes
@@ -72,17 +72,17 @@ Every transfer moves through a strictly validated lifecycle:
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: POST /api/v1/transfers (Accepted & Outbox Written)
+    [*] --> PENDING: POST /api/v1/transfers accepted
     
     PENDING --> PROCESSING: Worker claims transfer with lease token
     
-    PROCESSING --> SUCCEEDED: Funds verified; 2 ledger entries + balances committed
-    PROCESSING --> FAILED: Business decline (e.g. INSUFFICIENT_FUNDS, INACTIVE_ACCOUNT)
-    PROCESSING --> PENDING: Transient failure (retried with exponential backoff)
-    PROCESSING --> FAILED: Max retry attempts exhausted (routed to DLQ outbox)
+    PROCESSING --> SUCCEEDED: Funds verified and balanced ledger committed
+    PROCESSING --> FAILED: Business decline e.g. INSUFFICIENT_FUNDS
+    PROCESSING --> PENDING: Transient failure retried with exponential backoff
+    PROCESSING --> FAILED: Max retry attempts exhausted to DLQ outbox
     
-    SUCCEEDED --> [*]: Terminal State (Immutable)
-    FAILED --> [*]: Terminal State (Immutable)
+    SUCCEEDED --> [*]: Terminal State Immutable
+    FAILED --> [*]: Terminal State Immutable
 ```
 
 ---
