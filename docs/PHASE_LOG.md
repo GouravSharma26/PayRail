@@ -682,7 +682,7 @@
 - **Known limitations:** None for Phase 5 CI remediation pass.
 ### 2026-10-25 — Phase 6: Demo Packaging and Final Audit
 
-- **Commit:** not committed
+- **Commit:** [`b5820f3`](https://github.com/GouravSharma26/PayRail/commit/b5820f3)
 - **Scope:** Complete Phase 6 final review and demo packaging. Overhaul README.md into comprehensive production-quality demonstration documentation with architecture flowchart, transfer state machine diagram, transactional outbox sequence flow, local quickstart guide (Docker Compose profile `app` and host dev mode), step-by-step curl walkthroughs with expected payloads, test verification evidence, and explicit known limitations. Perform live end-to-end verification of idempotency deduplication replay, conflicting key reuse (409 Conflict), asynchronous broker processing, double-entry ledger balance conservation, insufficient funds decline, transient Kafka broker outage and autonomous outbox recovery, and reconciliation audits against live PostgreSQL 16 and Kafka 3.8 containers. Update checklist and review diff for clean-tree invariants.
 - **Files changed:**
   - `README.md` (comprehensive documentation with architecture diagrams, lifecycle state machines, sequence diagrams, step-by-step reproduction guide, verified test evidence, and limitations)
