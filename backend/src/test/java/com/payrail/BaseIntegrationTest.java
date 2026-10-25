@@ -39,7 +39,7 @@ public abstract class BaseIntegrationTest {
     protected JdbcTemplate jdbcTemplate;
 
     @BeforeEach
-    void cleanDatabase() {
+    protected void cleanDatabase() {
         // Reset all tables between tests without firing row-level application delete triggers
         jdbcTemplate.execute("""
                 TRUNCATE TABLE

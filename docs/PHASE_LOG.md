@@ -475,7 +475,7 @@
 - **Known limitations:** None for Phase 4.
 ### 2026-10-25 — Phase 4: Independent Review Remediation
 
-- **Commit:** [`f28b516`](https://github.com/GouravSharma26/PayRail/commit/f28b516)
+- **Commit:** [`4b4d495`](https://github.com/GouravSharma26/PayRail/commit/4b4d495217bd4b80c70b5e26a11744ecfb98d18f)
 - **Scope:** Technical remediation addressing Phase 4 review findings 1–5: resilient operational health reporting under database outages, null-safe diagnostics without falsified zero counts, repository-level SQL `COUNT(*)` for reconciliation issues, single-flight concurrency lock and bounded cooldown policy with HTTP 409 and 429 (`Retry-After`) responses on manual reconciliation triggers, strengthened configuration validation rejecting non-positive operational durations and enforcing backoff bounds, transaction-safe metrics incremented exclusively via `TransactionSynchronization.afterCommit()`, Dockerfile container healthcheck alignment using `wget`, Docker image build step in GitHub Actions CI, and full Docker Compose validation with `--profile all`.
 - **Files changed:**
   - `backend/src/main/java/com/payrail/config/PositiveDuration.java` & `PositiveDurationValidator.java` (JSR-303 constraint rejecting zero and negative `Duration` values)
@@ -517,7 +517,40 @@
   - Invariants: Synthetic-only simulator scope strictly preserved; zero real bank integrations; no ledger entry modifications; claim fencing, idempotency, and durable outbox delivery maintained.
 - **Not verified / blocked:** Frontend operator dashboard (Phase 5).
 - **Known limitations:** None for Phase 4.
-- **Reviewer notes / follow-up:** Phase 4 independent review remediation complete. All 5 findings fully resolved and verified across 162 automated tests, Docker Compose validation, and container image build.
+### 2026-10-25 — Phase 4: Reconciliation Transaction Boundary Correction
+
+- **Commit:** not committed
+- **Scope:** Technical remediation fixing reconciliation transaction boundary regression: eliminated self-invocation bypass of `@Transactional` in `ReconciliationService` by separating `ReconciliationCoordinator` from transactional `ReconciliationAuditExecutor`. The coordinator enforces cooldown, acquires single-flight `auditLock`, delegates to `ReconciliationAuditExecutor` via its Spring-managed proxy, and holds the lock until the database transaction is fully committed or rolled back. Ensures the entire reconciliation operation (audit scan, run insertion, and issue insertions) commits or rolls back atomically. Added comprehensive regression tests exercising coordinator entry points with failure injection, verified zero run counter increment on rollback, verified atomic commit on success, and verified mutual exclusion between manual and scheduled triggers. Added Docker Compose smoke test to CI workflow.
+- **Files changed:**
+  - `backend/src/main/java/com/payrail/reconciliation/service/ReconciliationFailureInjector.java` (test hook interface for simulating failure after run record insertion)
+  - `backend/src/main/java/com/payrail/reconciliation/service/ReconciliationAuditExecutor.java` (dedicated `@Transactional` Spring service bean executing full scan, run insertion, failure injection, issue insertions, and after-commit metric callbacks atomically)
+  - `backend/src/main/java/com/payrail/reconciliation/service/ReconciliationCoordinator.java` (dedicated `@Service` bean coordinating cooldown checks, single-flight locking, proxy delegation to executor, and finally-block lock release across manual and scheduled paths)
+  - `backend/src/main/java/com/payrail/ledger/service/ReconciliationService.java` (refactored to backward-compatible facade delegating to coordinator and executor without self-invocations)
+  - `backend/src/main/java/com/payrail/ops/service/OpsService.java` (injected `ReconciliationCoordinator` for manual audit triggers)
+  - `backend/src/test/java/com/payrail/BaseIntegrationTest.java` (made `cleanDatabase()` protected for cross-package test support)
+  - `backend/src/test/java/com/payrail/ops/OpsServiceHealthSummaryTest.java` (updated mock reference to `ReconciliationCoordinator`)
+  - `backend/src/test/java/com/payrail/reconciliation/ReconciliationTransactionBoundaryIntegrationTest.java` (4 integration tests: manual trigger rollback, scheduled audit rollback, atomic commit with issues, and single-flight lock exclusion during active transaction)
+  - `.github/workflows/ci.yml` (added Docker Compose smoke test with `--profile app up -d --build --wait`, `ps`, and `down -v`)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (updated test count to 166)
+  - `docs/MODEL_AND_TECH_DECISIONS.md` (recorded ADR-016 and ADR-017)
+  - `docs/PHASE_LOG.md` (corrected previous remediation commit reference to `4b4d495` and recorded boundary fix evidence)
+- **Design decision(s):**
+  - ADR-017: Separated `ReconciliationCoordinator` (locking, cooldown, scheduling, error translation) from `ReconciliationAuditExecutor` (`@Transactional` audit execution and persistence). Single-flight `auditLock` is held before transaction start and released only in coordinator's `finally` block after transaction completion. Mutual exclusion is non-blocking (`tryLock()`), preventing deadlocks.
+- **Commands run:**
+  - `.\mvnw.cmd test -Dtest=ReconciliationTransactionBoundaryIntegrationTest` — PASS, 4 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd test` — PASS, 166 tests run, 0 failures, 0 errors, 0 skipped in 40.505s
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 41.937s, 166 tests run, 0 failures, 0 errors, 0 skipped; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+  - `docker compose --profile all config` — PASS, valid Compose file configuration
+- **Test results:** unit `54 passed / 0 failed`; integration `112 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (166 total tests passing).
+- **Acceptance criteria verified:**
+  - Finding 1: Manual trigger path (`OpsService.triggerReconciliation` -> `ReconciliationCoordinator.triggerManualAudit`) with forced DB failure after run persistence rolls back both `reconciliation_runs` and `reconciliation_issues` rows.
+  - Finding 2: Scheduled path (`ReconciliationCoordinator.scheduledAudit`) with forced DB failure rolls back all run and issue records; committed run counter does not increase.
+  - Finding 3: Successful audit commits run and all issues atomically with matching foreign keys and increments committed metrics counter.
+  - Finding 4: Manual and scheduled execution cannot overlap while a transaction is finishing; concurrent manual trigger returns HTTP 409 and concurrent scheduled trigger cleanly skips; lock is released reliably after completion.
+  - Finding 5: CI workflow updated with container smoke test verifying healthy startup under Docker Compose.
+- **Not verified / blocked:** Frontend operator dashboard (Phase 5).
+- **Known limitations:** None for Phase 4.
+- **Reviewer notes / follow-up:** Phase 4 reconciliation transaction boundary correction complete. All 166 tests pass.
 
 ## Entry template
 

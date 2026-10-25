@@ -2,7 +2,7 @@ package com.payrail.ops.service;
 
 import com.payrail.config.KafkaHealthIndicator;
 import com.payrail.config.PayRailProperties;
-import com.payrail.ledger.service.ReconciliationService;
+import com.payrail.reconciliation.service.ReconciliationCoordinator;
 import com.payrail.ops.dto.OutboxStatusResponse;
 import com.payrail.ops.dto.ReconciliationRunDetailResponse;
 import com.payrail.ops.dto.SystemHealthSummaryResponse;
@@ -33,7 +33,7 @@ public class OpsService {
     private static final Logger log = LoggerFactory.getLogger(OpsService.class);
 
     private final JdbcTemplate jdbcTemplate;
-    private final ReconciliationService reconciliationService;
+    private final ReconciliationCoordinator reconciliationCoordinator;
     private final ReconciliationRunRepository runRepository;
     private final ReconciliationIssueRepository issueRepository;
     private final KafkaHealthIndicator kafkaHealthIndicator;
@@ -41,14 +41,14 @@ public class OpsService {
 
     public OpsService(
             JdbcTemplate jdbcTemplate,
-            ReconciliationService reconciliationService,
+            ReconciliationCoordinator reconciliationCoordinator,
             @Autowired(required = false) ReconciliationRunRepository runRepository,
             @Autowired(required = false) ReconciliationIssueRepository issueRepository,
             @Autowired(required = false) KafkaHealthIndicator kafkaHealthIndicator,
             PayRailProperties payRailProperties
     ) {
         this.jdbcTemplate = jdbcTemplate;
-        this.reconciliationService = reconciliationService;
+        this.reconciliationCoordinator = reconciliationCoordinator;
         this.runRepository = runRepository;
         this.issueRepository = issueRepository;
         this.kafkaHealthIndicator = kafkaHealthIndicator;
@@ -81,7 +81,7 @@ public class OpsService {
 
     public ReconciliationRunRecord triggerReconciliation() {
         log.info("Operational manual trigger of reconciliation audit initiated");
-        return reconciliationService.triggerManualAudit();
+        return reconciliationCoordinator.triggerManualAudit();
     }
 
     @Transactional(readOnly = true)

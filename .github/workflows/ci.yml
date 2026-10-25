@@ -49,7 +49,7 @@ jobs:
         run: docker compose --profile all config
 
   docker-build:
-    name: Build Backend Docker Image
+    name: Build Backend Docker Image & Smoke Test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -60,4 +60,10 @@ jobs:
 
       - name: Build Docker image
         run: docker build -f backend/Dockerfile -t payrail-backend:ci .
+
+      - name: Run Docker Compose smoke test
+        run: |
+          docker compose --profile app up -d --build --wait
+          docker compose --profile app ps
+          docker compose --profile app down -v
 

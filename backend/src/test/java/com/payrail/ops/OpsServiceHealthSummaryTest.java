@@ -2,12 +2,12 @@ package com.payrail.ops;
 
 import com.payrail.config.KafkaHealthIndicator;
 import com.payrail.config.PayRailProperties;
-import com.payrail.ledger.service.ReconciliationService;
 import com.payrail.ops.dto.SystemHealthSummaryResponse;
 import com.payrail.ops.service.OpsService;
 import com.payrail.reconciliation.domain.ReconciliationRunRecord;
 import com.payrail.reconciliation.repository.ReconciliationIssueRepository;
 import com.payrail.reconciliation.repository.ReconciliationRunRepository;
+import com.payrail.reconciliation.service.ReconciliationCoordinator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -35,7 +35,7 @@ class OpsServiceHealthSummaryTest {
     private JdbcTemplate jdbcTemplate;
 
     @Mock
-    private ReconciliationService reconciliationService;
+    private ReconciliationCoordinator reconciliationCoordinator;
 
     @Mock
     private ReconciliationRunRepository runRepository;
@@ -54,7 +54,7 @@ class OpsServiceHealthSummaryTest {
         payRailProperties = new PayRailProperties();
         opsService = new OpsService(
                 jdbcTemplate,
-                reconciliationService,
+                reconciliationCoordinator,
                 runRepository,
                 issueRepository,
                 kafkaHealthIndicator,

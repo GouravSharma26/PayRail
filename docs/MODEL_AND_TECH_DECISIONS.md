@@ -177,6 +177,36 @@ A second independent review of Phase 3 (commit `0893ec7` / reported HEAD `83f85c
    - The associated `transferId` is preserved in `correlation_id` (used as Kafka partition key for ordered routing) and within the `DeadLetterEnvelope` payload.
    - Eliminates all sequence concurrency collisions across parallel DLQ emissions for the same transfer while preserving full aggregate uniqueness in PostgreSQL.
 
+## ADR-016 — Phase 4 Operations and Observability: Resilient Health Reporting, Cooldown Throttling, and Transaction-Safe Metrics
+**Context:**
+Phase 4 reviews identified the need for resilient operational health reporting under database outages, null-safe diagnostics without falsified zero counts, repository-level SQL `COUNT(*)`, single-flight lock and bounded cooldown policy with HTTP 409 and 429 (`Retry-After`) responses on manual reconciliation triggers, strict duration validation, and transaction-safe metrics.
+
+**Decisions:**
+1. **Resilient Health Reporting:**
+   - `OpsService.getHealthSummary()` isolates database ping, recent run lookup, and open issue counts with individual try-catch blocks. Database outages mark status `DOWN` or `DEGRADED` and serialize diagnostic counts as `null` rather than false `0` counts.
+   - `ReconciliationIssueRepository.countByStatus(status)` executes an efficient SQL `SELECT COUNT(*)` rather than loading row entities.
+2. **Reconciliation Throttling & Single-Flight Guard:**
+   - Manual reconciliation triggers are guarded by an in-memory `ReentrantLock` (`auditLock.tryLock()`) returning HTTP 409 `RECONCILIATION_ALREADY_RUNNING` if an audit is already running.
+   - Manual triggers enforce a configurable cooldown (default 5 seconds) returning HTTP 429 `RECONCILIATION_COOLDOWN_ACTIVE` with a standard `Retry-After` header.
+3. **Transaction-Safe Micrometer Counters:**
+   - Committed-outcome metrics in `PayRailMetrics` are wrapped in `executeAfterCommit()`, registering a `TransactionSynchronization.afterCommit()` callback so that rolled-back transactions do not increment success or failure outcome counters.
+
+## ADR-017 — Phase 4 Review Remediation: Separation of Reconciliation Coordinator and Transactional Audit Executor
+**Context:**
+In `ReconciliationService`, calling `runAuditAndPersist()` (annotated with `@Transactional`) from other methods in the same bean (`triggerManualAudit()` and `scheduledAudit()`) caused Spring proxy-based transaction interceptors to be completely bypassed due to Java/Spring self-invocation limitations. Consequently, manual and scheduled reconciliation runs persisted run headers and issue records without an atomic database transaction.
+
+**Decisions:**
+1. **Separation of Concerns across Dedicated Service Beans:**
+   - Created `ReconciliationAuditExecutor` annotated with `@Service`. Its `executeAuditAndPersist(String triggerType)` method is annotated with `@Transactional` and executes the full audit scan, inserts the `reconciliation_runs` header, triggers test failure injection hooks, inserts all `reconciliation_issues` records, and registers `afterCommit()` metrics within a single atomic database transaction. Any exception cleanly rolls back all run and issue records.
+   - Created `ReconciliationCoordinator` annotated with `@Service`. It manages the single-flight `auditLock` (`ReentrantLock`), enforces the manual cooldown policy, routes scheduled (`@Scheduled`) and manual executions through a unified entry path, and delegates execution to `ReconciliationAuditExecutor` across the Spring-managed proxy boundary.
+2. **Lock Lifecycle Surrounding Transaction Lifecycle:**
+   - The coordinator acquires `auditLock.tryLock()` *before* invoking `auditExecutor.executeAuditAndPersist()`, and releases `auditLock` strictly in a `finally` block *after* the transactional method returns and its database transaction commits or rolls back.
+   - This guarantees that concurrent manual triggers receive HTTP 409 and concurrent scheduled sweeps skip execution while an existing audit transaction is scanning, persisting, or committing.
+3. **Non-Blocking Deadlock Prevention:**
+   - Both manual and scheduled paths use `auditLock.tryLock()`. Neither path blocks or waits on locks, eliminating any possibility of double-locking or deadlocks between scheduled and manual executions.
+4. **Backward-Compatible Facade:**
+   - Preserved `ReconciliationService` as a facade delegating coordinator and executor methods for seamless compatibility across existing services and test callers.
+
 ## Exact version record (verified 2026-10-24)
 
 | Component | Pinned version/tag | Compatibility verified against | Official source | Date |
