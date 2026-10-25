@@ -724,7 +724,7 @@
 
 ### 2026-10-25 — Security Remediation: Frontend Dependency Vulnerability Resolution
 
-- **Commit:** [`e97b2a3`](https://github.com/GouravSharma26/PayRail/commit/e97b2a3)
+- **Commit:** [`047687e`](https://github.com/GouravSharma26/PayRail/commit/047687e)
 - **Scope:** Remediate 3 frontend dependency vulnerabilities (1 moderate, 2 critical) discovered during CI `npm ci` without breaking upgrades. Update `vitest` to `^4.1.12` eliminating vulnerable `tinypool` and `@vitest/mocker`. Upgrade `eslint` to `^10.13.0` and `@eslint/js` to `^10.0.1` eliminating the upstream ESLint 9 deprecation warning. Update `frontend/vite.config.ts` to import `defineConfig` from `vitest/config` for clean test typing. Add explicit `Dependency security audit` step (`npm audit`) to `.github/workflows/ci.yml`. Document the remaining upstream advisory regarding `whatwg-encoding`.
 - **Files changed:**
   - `frontend/package.json` (bumped `vitest` to `^4.1.12`, `eslint` to `^10.13.0`, `@eslint/js` to `^10.0.1`)
