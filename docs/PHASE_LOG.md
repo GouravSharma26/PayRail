@@ -519,7 +519,7 @@
 - **Known limitations:** None for Phase 4.
 ### 2026-10-25 — Phase 4: Reconciliation Transaction Boundary Correction
 
-- **Commit:** not committed
+- **Commit:** [`9e672ac`](https://github.com/GouravSharma26/PayRail/commit/9e672ac789c5c6c795a6bfbb9d1cf48846389753)
 - **Scope:** Technical remediation fixing reconciliation transaction boundary regression: eliminated self-invocation bypass of `@Transactional` in `ReconciliationService` by separating `ReconciliationCoordinator` from transactional `ReconciliationAuditExecutor`. The coordinator enforces cooldown, acquires single-flight `auditLock`, delegates to `ReconciliationAuditExecutor` via its Spring-managed proxy, and holds the lock until the database transaction is fully committed or rolled back. Ensures the entire reconciliation operation (audit scan, run insertion, and issue insertions) commits or rolls back atomically. Added comprehensive regression tests exercising coordinator entry points with failure injection, verified zero run counter increment on rollback, verified atomic commit on success, and verified mutual exclusion between manual and scheduled triggers. Added Docker Compose smoke test to CI workflow.
 - **Files changed:**
   - `backend/src/main/java/com/payrail/reconciliation/service/ReconciliationFailureInjector.java` (test hook interface for simulating failure after run record insertion)
