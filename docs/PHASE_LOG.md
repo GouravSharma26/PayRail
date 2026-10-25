@@ -755,6 +755,32 @@
 - **Known limitations:** `whatwg-encoding` will continue to show an npm deprecation note until upstream `jsdom` releases a version adopting `@exodus/bytes`.
 - **Reviewer notes / follow-up:** Remediation complete and ready for commit and CI push.
 
+### 2026-10-26 — Configuration: Backend CORS Configuration for Deployed Environments
+
+- **Commit:** [`6f94690`](https://github.com/GouravSharma26/PayRail/commit/6f94690)
+- **Scope:** Add CORS configuration to allow cross-origin requests from frontend origins (local Vite dev server and deployed frontend instances) to API routes (`/api/**`) and Actuator endpoints (`/actuator/health`, `/actuator/prometheus`). Support configurable origins via `PAYRAIL_CORS_ALLOWED_ORIGINS` environment variable, expose `Retry-After` and `X-Correlation-Id` response headers, and add integration tests verifying preflight and simple requests.
+- **Files changed:**
+  - `backend/src/main/java/com/payrail/config/CorsConfig.java` (implemented WebMvcConfigurer with addCorsMappings)
+  - `backend/src/main/resources/application.yml` (configured management.endpoints.web.cors for Actuator endpoints)
+  - `.env.example` (documented PAYRAIL_CORS_ALLOWED_ORIGINS)
+  - `backend/src/test/java/com/payrail/CorsIntegrationTest.java` (added integration tests for OPTIONS preflight, GET CORS, and actuator health CORS)
+  - `docs/PHASE_LOG.md` (recorded CORS configuration entry)
+- **Design decision(s):**
+  - Configured both Spring MVC `WebMvcConfigurer` (for `/api/**`) and Spring Boot Actuator `management.endpoints.web.cors` (for `/actuator/**`) using the same `PAYRAIL_CORS_ALLOWED_ORIGINS` environment variable with a default fallback of `http://localhost:5173`.
+  - Exposed critical HTTP headers `Retry-After` and `X-Correlation-Id` so frontend error-handling and idempotency interceptors can inspect them across origins.
+- **Commands run:**
+  - `.\mvnw.cmd test -Dtest=CorsIntegrationTest` — PASS, 3 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd test` — PASS, 170 backend tests run, 0 failures, 0 errors, 0 skipped in 41.537s
+  - `docker build -f backend/Dockerfile -t payrail-backend:ci .` — PASS, Docker image built successfully
+- **Test results:** backend `170 passed / 0 failed / 0 skipped`; build result: `SUCCESS`.
+- **Acceptance criteria verified:**
+  - Preflight OPTIONS requests from allowed origins receive 200 OK and expected CORS headers.
+  - Simple GET requests receive `Access-Control-Allow-Origin`.
+  - Actuator endpoints properly allow cross-origin scraping and health checks.
+- **Not verified / blocked:** None.
+- **Known limitations:** None.
+- **Reviewer notes / follow-up:** Backend CORS configuration complete.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name
