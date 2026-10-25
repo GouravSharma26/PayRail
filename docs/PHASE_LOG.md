@@ -589,7 +589,7 @@
 
 ### 2026-10-25 — Phase 5: Operations Dashboard
 
-- **Commit:** not committed
+- **Commit:** [`0d9a872`](https://github.com/GouravSharma26/PayRail/commit/0d9a872)
 - **Scope:** Implement Phase 5 operations dashboard in React + TypeScript with Vite toolchain, strictly integrated with authoritative Spring Boot backend. Includes persistent simulator warning banner, Overview telemetry, Accounts view (with double-entry ledger inspection; omitting public account creation), Transfers view (with status timeline, execution attempt audits, safe error details, bounded live polling with timer cleanup on terminal state/unmount), Continuous Reconciliation diagnostics (read-only audit runs and issue details, rate-limited manual trigger), and Operations diagnostics (outbox backlog, broker/consumer health, DLQ summaries, read-only invariants). String-safe currency formatting strictly avoids `parseFloat` or binary floating point.
 - **Files changed:**
   - `frontend/package.json` (React 19, TypeScript ~5.7.2, Vite 6.2, Vitest 3.0.7, ESLint 9, Lucide React)
