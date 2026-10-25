@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TransfersPage } from '../pages/TransfersPage';
 import { api, ApiError } from '../api/client';
@@ -274,18 +274,24 @@ describe('TransfersPage', () => {
 
     render(<TransfersPage initialTransferId={mockPendingTransfer.id} />);
 
-    // Fast-forward through first render
-    await vi.advanceTimersByTimeAsync(100);
+    // Fast-forward through first render and initial fetch
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
 
     // Expect getTransfer called for initial selection
     expect(api.getTransfer).toHaveBeenCalledTimes(1);
 
     // Advance 2 seconds (poll interval for nonterminal transfer)
-    await vi.advanceTimersByTimeAsync(2100);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
     expect(api.getTransfer).toHaveBeenCalledTimes(2);
 
     // Transfer is now SUCCEEDED (terminal), advance another 10 seconds
-    await vi.advanceTimersByTimeAsync(10000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000);
+    });
 
     // Polling must have stopped; no further getTransfer calls
     expect(api.getTransfer).toHaveBeenCalledTimes(2);
@@ -308,7 +314,9 @@ describe('TransfersPage', () => {
     (api.getTransferLedger as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
     const { unmount } = render(<TransfersPage initialTransferId={mockPendingTransfer.id} />);
-    await vi.advanceTimersByTimeAsync(100);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
 
     expect(api.getTransfer).toHaveBeenCalledTimes(1);
 
@@ -316,7 +324,9 @@ describe('TransfersPage', () => {
     unmount();
 
     // Advance time past the 2s polling window
-    await vi.advanceTimersByTimeAsync(5000);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000);
+    });
 
     // No additional calls after unmount
     expect(api.getTransfer).toHaveBeenCalledTimes(1);

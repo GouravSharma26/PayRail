@@ -152,7 +152,7 @@ export const TransfersPage: React.FC<TransfersPageProps> = ({
     }
   }, [initialTransferId]);
 
-  // Cleanup polling timer on unmount or when selected transfer changes
+  // Cleanup polling timer on unmount
   useEffect(() => {
     return () => {
       if (pollingTimerRef.current) {
@@ -163,7 +163,7 @@ export const TransfersPage: React.FC<TransfersPageProps> = ({
         abortControllerRef.current.abort();
       }
     };
-  }, [selectedTransfer?.id]);
+  }, []);
 
   const handleSelectTransfer = (tx: TransferResponse) => {
     if (pollingTimerRef.current) {

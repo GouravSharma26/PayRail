@@ -652,31 +652,35 @@
 ### 2026-10-25 — Phase 5: CI Coverage and Build Metadata Remediation
 
 - **Commit:** [`890dc96`](https://github.com/GouravSharma26/PayRail/commit/890dc96)
-- **Scope:** Add dedicated GitHub Actions frontend CI job with Node.js 22, npm ci, lint, typecheck, tests, and build. Untrack generated `frontend/tsconfig.tsbuildinfo` and add `*.tsbuildinfo` to `.gitignore`. Preserve all existing backend CI jobs (Maven verify, Docker Compose config validation, backend Docker build and smoke test).
+- **Scope:** Add dedicated GitHub Actions frontend CI job with Node.js 22, npm ci, lint, typecheck, tests, and build. Untrack generated `frontend/tsconfig.tsbuildinfo` and add `*.tsbuildinfo` plus `.playwright-mcp/` to `.gitignore`. Fix `TransfersPage` unmount cleanup effect dependency to prevent premature timer cancellation on initial selection. Preserve all existing backend CI jobs (Maven verify, Docker Compose config validation, backend Docker build and smoke test).
 - **Files changed:**
   - `.github/workflows/ci.yml` (added `frontend-ci` job with pinned Node.js 22, caching `package-lock.json`, running lint, typecheck, test, and build)
-  - `.gitignore` (added `*.tsbuildinfo` ignore rule)
+  - `.gitignore` (added `*.tsbuildinfo` and `.playwright-mcp/` ignore rules)
   - `frontend/tsconfig.tsbuildinfo` (removed from Git tracking)
+  - `frontend/src/pages/TransfersPage.tsx` (fixed unmount cleanup effect dependency from `[selectedTransfer?.id]` to `[]` so polling timer is not prematurely cancelled upon initial selection)
+  - `frontend/src/tests/TransfersPage.test.tsx` (wrapped timer advancement assertions in `act(async () => ...)` for deterministic state flushing)
   - `docs/DEVELOPMENT_CHECKLIST.md` (checked frontend CI and build metadata items)
   - `docs/PHASE_LOG.md` (recorded Phase 5 CI remediation entry)
 - **Design decision(s):**
   - Node.js pinned to 22 LTS in `.github/workflows/ci.yml` with npm cache pointing to `frontend/package-lock.json` and default working directory `frontend`.
   - Added `*.tsbuildinfo` to repository `.gitignore` so incremental compiler cache files from `tsc -b` are never committed to version control.
+  - In `TransfersPage.tsx`, the unmount cleanup effect had dependency `[selectedTransfer?.id]`, which caused React to re-run the previous effect's cleanup and clear `pollingTimerRef.current` immediately after `setSelectedTransfer(tx)` was dispatched on initial selection. Changing dependency to `[]` guarantees the cleanup only fires when `TransfersPage` unmounts, while manual selection changes and modal closure continue to explicitly reset the timer.
 - **Commands run:**
   - `npm run lint` (frontend) — PASS, 0 errors, 0 warnings
   - `npm run typecheck` (frontend) — PASS, `tsc --noEmit` exited with code 0
-  - `npm run test` (frontend) — PASS, 6 test files, 29 tests run, 29 passed, 0 failed in 3.59s
-  - `npm run build` (frontend) — PASS, `tsc -b && vite build` built production bundle in 2.28s (318.65 kB JS, 10.86 kB CSS)
+  - `npm run test` (frontend) — PASS, 6 test files, 29 tests run, 29 passed, 0 failed in 3.63s
+  - `npm run build` (frontend) — PASS, `tsc -b && vite build` built production bundle in 2.42s (318.63 kB JS, 10.86 kB CSS)
   - `.\mvnw.cmd -B verify` — PASS, 167 backend tests run, 0 failures, 0 errors, 0 skipped in 47.050s
 - **Test results:** frontend `29 passed / 0 failed`; backend `167 passed / 0 failed / 0 skipped`; build result: `SUCCESS`.
 - **Acceptance criteria verified:**
   - Frontend CI job runs `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, and `npm run build`.
   - `frontend/tsconfig.tsbuildinfo` removed from Git index and covered by `.gitignore`.
+  - Polling live updates and timer cleanup verified deterministically under fake timers and `act`.
   - All existing backend Java 21, Maven verify, Docker Compose validation, and Docker smoke test jobs remain intact.
   - Zero financial or transaction-processing code modified.
 - **Not verified / blocked:** Phase 6 final review and clean-checkout verification (strictly out of scope for Phase 5 remediation).
 - **Known limitations:** None for Phase 5 CI remediation pass.
-- **Reviewer notes / follow-up:** Ready to commit and push. Will monitor GitHub Actions run upon push.
+- **Reviewer notes / follow-up:** Pushed fix to GitHub and monitoring CI workflow.
 
 ## Entry template
 
