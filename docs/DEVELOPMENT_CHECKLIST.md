@@ -77,11 +77,11 @@ Use checkboxes only after verified implementation. Initially all implementation 
 
 ## Phase 6 — Final review
 
-- [ ] Clean-checkout instructions have been followed.
-- [ ] Idempotency duplicate replay walkthrough is verified.
-- [ ] Concurrency overspend walkthrough is verified.
-- [ ] Transient broker/failure recovery walkthrough is verified.
-- [ ] Reconciliation clean/issue scenarios are verified.
-- [ ] Git diff/status reviewed for secrets, local data, generated files, and unrelated changes.
-- [ ] README contains only tested commands/features/URLs/results.
-- [ ] `docs/PHASE_LOG.md` contains actual commands, test counts, commit SHAs, limitations.
+- [x] Clean-checkout instructions have been followed.
+- [x] Idempotency duplicate replay walkthrough is verified.
+- [x] Concurrency overspend walkthrough is verified.
+- [x] Transient broker/failure recovery walkthrough is verified.
+- [x] Reconciliation clean/issue scenarios are verified.
+- [x] Git diff/status reviewed for secrets, local data, generated files, and unrelated changes.
+- [x] README contains only tested commands/features/URLs/results.
+- [x] `docs/PHASE_LOG.md` contains actual commands, test counts, commit SHAs, limitations.

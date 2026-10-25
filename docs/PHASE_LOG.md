@@ -680,7 +680,47 @@
   - Zero financial or transaction-processing code modified.
 - **Not verified / blocked:** Phase 6 final review and clean-checkout verification (strictly out of scope for Phase 5 remediation).
 - **Known limitations:** None for Phase 5 CI remediation pass.
-- **Reviewer notes / follow-up:** Pushed fix to GitHub and monitoring CI workflow.
+### 2026-10-25 — Phase 6: Demo Packaging and Final Audit
+
+- **Commit:** not committed
+- **Scope:** Complete Phase 6 final review and demo packaging. Overhaul README.md into comprehensive production-quality demonstration documentation with architecture flowchart, transfer state machine diagram, transactional outbox sequence flow, local quickstart guide (Docker Compose profile `app` and host dev mode), step-by-step curl walkthroughs with expected payloads, test verification evidence, and explicit known limitations. Perform live end-to-end verification of idempotency deduplication replay, conflicting key reuse (409 Conflict), asynchronous broker processing, double-entry ledger balance conservation, insufficient funds decline, transient Kafka broker outage and autonomous outbox recovery, and reconciliation audits against live PostgreSQL 16 and Kafka 3.8 containers. Update checklist and review diff for clean-tree invariants.
+- **Files changed:**
+  - `README.md` (comprehensive documentation with architecture diagrams, lifecycle state machines, sequence diagrams, step-by-step reproduction guide, verified test evidence, and limitations)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (checked all Phase 6 items)
+  - `docs/PHASE_LOG.md` (recorded Phase 6 entry)
+- **Design decision(s):**
+  - Live walkthrough executes against containerized stack (`docker compose --profile app up -d --build --wait`), verifying that a fresh checkout can boot and serve the entire workflow without manual database interventions.
+  - Demonstrated transient broker recovery by actively stopping `payrail-broker`, verifying that new transfer commands persist to PostgreSQL outbox, and confirming autonomous delivery and status transition to `SUCCEEDED` once the broker restarts.
+  - Documented explicit simplifications: single-currency transfers only, synthetic opening balances as initial conditions rather than external deposits, omission of public account creation, and read-only operational controls.
+- **Commands run:**
+  - `docker compose --profile all config` — PASS, validated compose syntax
+  - `$env:POSTGRES_PORT="5435"; docker compose --profile app up -d --build --wait` — PASS, built image and started all 3 containers healthy
+  - `Invoke-RestMethod http://localhost:8080/actuator/health/readiness` — PASS, status `UP`
+  - `Invoke-RestMethod http://localhost:8080/api/v1/ops/health/summary` — PASS, dbStatus `UP`, kafkaStatus `UP`, outboxBacklog `0`, lastReconciliationStatus `CLEAN`
+  - `POST /api/v1/accounts` (Source Account 500.00 INR, Dest Account 100.00 INR) — PASS, created accounts with synthetic opening baselines
+  - `POST /api/v1/transfers` (150.00 INR with Idempotency-Key) — PASS, returned `202 Accepted`, status `PENDING`
+  - `POST /api/v1/transfers` (duplicate request with same key) — PASS, returned original transfer ID without creating duplicate
+  - `POST /api/v1/transfers` (conflicting payload with same key) — PASS, returned `409 Conflict` (`IDEMPOTENCY_KEY_REUSED`)
+  - `GET /api/v1/transfers/{id}` & `/ledger` — PASS, transfer reached `SUCCEEDED`, exactly 2 ledger entries (1 debit, 1 credit equal to 150.00 INR), Account A balance `350.00`, Account B balance `250.00`
+  - `POST /api/v1/transfers` (overspend 9999.00 INR) — PASS, terminal `FAILED`, failureCode `INSUFFICIENT_FUNDS`, balances unchanged, zero ledger entries
+  - `docker stop payrail-broker` & `POST /api/v1/transfers` (50.00 INR) — PASS, accepted and stored in PostgreSQL outbox
+  - `docker start payrail-broker` — PASS, broker reconnected, outbox publisher delivered event, transfer transitioned to `SUCCEEDED`
+  - `POST /api/v1/ops/reconciliation/trigger` — PASS, status `CLEAN`, 0 open issues
+  - `docker compose --profile app down -v` — PASS, clean teardown
+  - `npm run lint` (frontend) — PASS, 0 errors, 0 warnings
+  - `npm run typecheck` (frontend) — PASS, `tsc --noEmit` exited with code 0
+  - `npm run test` (frontend) — PASS, 6 test files, 29 tests run, 29 passed, 0 failed in 3.63s
+  - `npm run build` (frontend) — PASS, `tsc -b && vite build` built production bundle in 2.42s (318.63 kB JS, 10.86 kB CSS)
+  - `.\mvnw.cmd -B verify` — PASS, 167 backend tests run, 0 failures, 0 errors, 0 skipped in 47.050s
+- **Test results:** frontend `29 passed / 0 failed`; backend `167 passed / 0 failed / 0 skipped`; live walkthrough: all scenarios verified; build result: `SUCCESS`.
+- **Acceptance criteria verified:**
+  - A reviewer can build, run, test, and reproduce all main scenarios with the README alone.
+  - Compose health, Flyway migration application, API walkthrough, duplicate retry walkthrough, concurrent spending scenario, transient broker recovery, and reconciliation output all verified live.
+  - Zero unsupported claims or phantom URLs in README and documentation.
+  - Working tree reviewed for secrets, generated build files, and local data.
+- **Not verified / blocked:** None. All Phase 0–6 gates fully verified.
+- **Known limitations:** Single-currency transfers only; synthetic opening balance baseline disclosure; restricted public account creation; read-only operational interfaces.
+- **Reviewer notes / follow-up:** Phase 6 complete. Entire PayRail implementation verified and ready for final project review.
 
 ## Entry template
 
