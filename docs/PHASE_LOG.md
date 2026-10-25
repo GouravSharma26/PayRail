@@ -587,6 +587,69 @@
 - **Known limitations:** None for Phase 4.
 - **Reviewer notes / follow-up:** Phase 4 DLQ metrics synchronization fix complete. Ready for final review.
 
+### 2026-10-25 — Phase 5: Operations Dashboard
+
+- **Commit:** not committed
+- **Scope:** Implement Phase 5 operations dashboard in React + TypeScript with Vite toolchain, strictly integrated with authoritative Spring Boot backend. Includes persistent simulator warning banner, Overview telemetry, Accounts view (with double-entry ledger inspection; omitting public account creation), Transfers view (with status timeline, execution attempt audits, safe error details, bounded live polling with timer cleanup on terminal state/unmount), Continuous Reconciliation diagnostics (read-only audit runs and issue details, rate-limited manual trigger), and Operations diagnostics (outbox backlog, broker/consumer health, DLQ summaries, read-only invariants). String-safe currency formatting strictly avoids `parseFloat` or binary floating point.
+- **Files changed:**
+  - `frontend/package.json` (React 19, TypeScript ~5.7.2, Vite 6.2, Vitest 3.0.7, ESLint 9, Lucide React)
+  - `frontend/package-lock.json` (pinned dependency lockfile)
+  - `frontend/tsconfig.json` (strict TypeScript configuration)
+  - `frontend/vite.config.ts` (dev server proxy to backend at localhost:8080, Vitest JSDOM environment)
+  - `frontend/vitest.setup.ts` (Jest DOM matchers and automatic test cleanup hook)
+  - `frontend/eslint.config.js` (flat ESLint configuration)
+  - `frontend/index.html` (HTML shell with Inter & JetBrains Mono typography)
+  - `frontend/src/types/api.ts` (TypeScript types matching backend DTO schemas)
+  - `frontend/src/api/client.ts` (typed HTTP client, ApiError envelope extraction, correlation ID propagation)
+  - `frontend/src/utils/formatters.ts` (string-based currency formatting preserving scale without parseFloat, UTC timestamp formatters, duration formatters, UUID truncator)
+  - `frontend/src/index.css` (custom design system tokens, responsive grid, glassmorphic cards, badges, modal, banner, skeletons)
+  - `frontend/src/components/StatusBadge.tsx` (accessible status badge with pulse indicator)
+  - `frontend/src/components/Pagination.tsx` (accessible pagination with boundary and page counts)
+  - `frontend/src/components/Skeleton.tsx` (card and table loading skeletons)
+  - `frontend/src/components/EmptyState.tsx` (accessible empty state)
+  - `frontend/src/components/ErrorAlert.tsx` (safe error display with code, correlation ID, and retry action)
+  - `frontend/src/components/Layout.tsx` (persistent simulator warning banner, top navigation, system health pill, semantic footer)
+  - `frontend/src/pages/OverviewPage.tsx` (transfer count cards, synthetic totals, outbox backlog, latest reconciliation, health status, recent transfers)
+  - `frontend/src/pages/AccountsPage.tsx` (paginated accounts list, currency/status filter, detail modal with transfers and immutable ledger tabs; omitted public account creation)
+  - `frontend/src/pages/TransfersPage.tsx` (paginated transfer list, status/currency/date filters, transfer details with status transition timeline, execution attempts audit, balanced double-entry legs, bounded polling stopping on terminal status with timer cleanup on unmount)
+  - `frontend/src/pages/ReconciliationPage.tsx` (audit run history, discrepancy inspection, rate-limited manual audit trigger handling 429/409, read-only invariant banner)
+  - `frontend/src/pages/OperationsPage.tsx` (transactional outbox telemetry, broker/consumer health, DLQ summaries, Actuator component health, Prometheus metrics parser, read-only diagnostics notice)
+  - `frontend/src/App.tsx` (tab state management and cross-view transfer inspection navigation)
+  - `frontend/src/main.tsx` (React root render)
+  - `frontend/src/tests/formatters.test.ts` (unit tests for string currency formatter, verifying parseFloat is never invoked)
+  - `frontend/src/tests/Layout.test.tsx` (tests persistent simulator warning on all routes, navigation switching, and health indicator)
+  - `frontend/src/tests/AccountsPage.test.tsx` (tests decimal balance rendering, detail modal tabs, and verifies account creation controls are absent)
+  - `frontend/src/tests/TransfersPage.test.tsx` (tests status filtering, pagination, empty state, safe errors, detail view, bounded polling stopping on SUCCEEDED/FAILED, and timer cleanup on unmount)
+  - `frontend/src/tests/ReconciliationPage.test.tsx` (tests run list, discrepancy inspection, 429 cooldown handling, and verifies auto-repair/ledger edit controls are absent)
+  - `frontend/src/tests/OperationsPage.test.tsx` (tests outbox telemetry, DLQ summary, health cards, and verifies unsafe replay buttons are absent)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (checked Phase 5 items)
+  - `docs/PHASE_LOG.md` (recorded Phase 5 entry)
+- **Design decision(s):**
+  - Dev server proxy in `vite.config.ts` handles `/api` and `/actuator` without modifying backend security/CORS contracts.
+  - Monetary values are treated strictly as immutable decimal strings through API layer and `formatCurrency`, formatting integer comma grouping and fractional scale with zero floating-point operations.
+  - Transfer detail live polling runs every 2s while in non-terminal states (`PENDING`, `PROCESSING`), and stops immediately upon reaching terminal state (`SUCCEEDED`, `FAILED`). Component cleanup hooks guarantee timer and abort controller cancellation on unmount or navigation.
+  - Omitted public account creation controls and prohibited direct ledger editing / auto-repair / DLQ replay controls in accordance with PayRail safety and audit invariants.
+- **Commands run:**
+  - `npm run lint` — PASS, 0 errors, 0 warnings
+  - `npm run typecheck` — PASS, `tsc --noEmit` exited with code 0
+  - `npm run test` — PASS, 6 test files, 29 tests run, 29 passed, 0 failed in 3.31s
+  - `npm run build` — PASS, `tsc -b && vite build` built production bundle in 2.45s (318.65 kB JS, 10.86 kB CSS)
+  - `.\mvnw.cmd test` — PASS, 167 backend tests run, 0 failures, 0 errors, 0 skipped in 44.213s
+- **Test results:** frontend `29 passed / 0 failed`; backend `167 passed / 0 failed / 0 skipped`; build result: `SUCCESS`.
+- **Acceptance criteria verified:**
+  - Synthetic simulator warning banner `"PayRail Synthetic Payment Simulator — no real money or bank connections."` is persistently displayed across all application routes.
+  - Overview screen renders transfer status counts, synthetic totals, outbox backlog, reconciliation status, and system health.
+  - Accounts screen is paginated, displays balances as decimal strings, provides transfer and ledger tabs, and omits unrestricted account creation.
+  - Transfers screen is paginated, supports status/currency/date/ID filtering, displays lifecycle differences (accepted vs completed), shows transition history and execution attempts audit, provides safe failure code/message, stops polling on terminal statuses (`SUCCEEDED`, `FAILED`), and cleans up timers on unmount.
+  - Reconciliation screen renders audit runs and issues, handles 429 cooldown / 409 conflict on trigger, and strictly omits auto-repair or direct ledger editing.
+  - Operations screen renders outbox backlog, oldest event age, broker/consumer health, DLQ summaries, and strictly omits unsafe replay controls.
+  - Monetary values remain decimal strings and are never converted with `parseFloat`.
+  - Frontend lint, typecheck, tests, and production build all pass.
+  - Full backend regression suite (167 tests) passes without regression.
+- **Not verified / blocked:** Phase 6 final review and clean-checkout verification.
+- **Known limitations:** Browser-level end-to-end integration with live Spring Boot + Vite running simultaneously requires running both processes locally.
+- **Reviewer notes / follow-up:** Phase 5 complete. Ready for commit and review.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name

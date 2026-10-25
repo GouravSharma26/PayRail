@@ -65,13 +65,13 @@ Use checkboxes only after verified implementation. Initially all implementation 
 
 ## Phase 5 — Dashboard
 
-- [ ] Phase 1–4 gates passed before frontend work started.
-- [ ] Synthetic-only banner always visible.
-- [ ] Account and transfer tables are paginated and handle API errors.
-- [ ] Transfer detail displays status history, attempts, and safe failure reasons.
-- [ ] Reconciliation/ops views are read-only or properly protected.
-- [ ] Frontend does not calculate authoritative financial balances.
-- [ ] Lint/typecheck/tests/build pass.
+- [x] Phase 1–4 gates passed before frontend work started.
+- [x] Synthetic-only banner always visible.
+- [x] Account and transfer tables are paginated and handle API errors.
+- [x] Transfer detail displays status history, attempts, and safe failure reasons.
+- [x] Reconciliation/ops views are read-only or properly protected.
+- [x] Frontend does not calculate authoritative financial balances.
+- [x] Lint/typecheck/tests/build pass (ESLint 9, TypeScript ~5.7.2, 29 Vitest tests passing, Vite production build).
 
 ## Phase 6 — Final review
 
