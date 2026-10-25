@@ -722,6 +722,39 @@
 - **Known limitations:** Single-currency transfers only; synthetic opening balance baseline disclosure; restricted public account creation; read-only operational interfaces.
 - **Reviewer notes / follow-up:** Phase 6 complete. Entire PayRail implementation verified and ready for final project review.
 
+### 2026-10-25 — Security Remediation: Frontend Dependency Vulnerability Resolution
+
+- **Commit:** [`e97b2a3`](https://github.com/GouravSharma26/PayRail/commit/e97b2a3)
+- **Scope:** Remediate 3 frontend dependency vulnerabilities (1 moderate, 2 critical) discovered during CI `npm ci` without breaking upgrades. Update `vitest` to `^4.1.12` eliminating vulnerable `tinypool` and `@vitest/mocker`. Upgrade `eslint` to `^10.13.0` and `@eslint/js` to `^10.0.1` eliminating the upstream ESLint 9 deprecation warning. Update `frontend/vite.config.ts` to import `defineConfig` from `vitest/config` for clean test typing. Add explicit `Dependency security audit` step (`npm audit`) to `.github/workflows/ci.yml`. Document the remaining upstream advisory regarding `whatwg-encoding`.
+- **Files changed:**
+  - `frontend/package.json` (bumped `vitest` to `^4.1.12`, `eslint` to `^10.13.0`, `@eslint/js` to `^10.0.1`)
+  - `frontend/package-lock.json` (regenerated lockfile with 0 vulnerabilities)
+  - `frontend/vite.config.ts` (switched import from `vite` to `vitest/config`)
+  - `.github/workflows/ci.yml` (added `Dependency security audit` step running `npm audit`)
+  - `docs/PHASE_LOG.md` (recorded audit details, vulnerability analysis, and remediation evidence)
+- **Design decision(s):**
+  - Upgraded `vitest` from `^3.0.7` to `^4.1.12` directly rather than running `npm audit fix --force`. Vitest 4 replaces `tinypool` with `tinyexec` and bumps `@vitest/mocker` to 4.1.12, completely eliminating GHSA-5gmw-xhrv-c9v3 (critical RCE in worker options) and GHSA-82fw-gwwq-j7x9 (moderate path traversal in mocker).
+  - Upgraded ESLint to 10.x (`eslint@10.13.0`, `@eslint/js@10.0.1`), compatible with `typescript-eslint@^8.24.1` and the flat `eslint.config.js`, resolving the npm warning regarding unsupported ESLint 9.x versions.
+  - Documented remaining upstream deprecation warning for `whatwg-encoding@3.1.1`: it is a transitive subdependency pinned by `jsdom@26.1.0` (used strictly in Vitest/testing-library DOM emulation for tests, never bundled into production client artifacts). The upstream author recommends `@exodus/bytes`, but JSDOM has not yet migrated. The package contains 0 security vulnerabilities.
+- **Commands run:**
+  - `npm audit --json` (frontend) — identified 3 vulnerabilities (2 critical via `tinypool` and `vitest`, 1 moderate via `@vitest/mocker`)
+  - `npm audit` (frontend) — PASS, `found 0 vulnerabilities`
+  - `npm ci` (frontend) — PASS, 244 packages installed, 0 vulnerabilities found
+  - `npm run lint` (frontend) — PASS, 0 errors, 0 warnings
+  - `npm run typecheck` (frontend) — PASS, `tsc --noEmit` exited with code 0
+  - `npm run test` (frontend) — PASS, 6 test files, 29 tests run, 29 passed, 0 failed in 2.64s
+  - `npm run build` (frontend) — PASS, `tsc -b && vite build` built production bundle in 2.10s (318.63 kB JS, 10.86 kB CSS)
+  - `.\mvnw.cmd test` (backend) — PASS, 167 backend tests run, 0 failures, 0 errors, 0 skipped in 38.776s
+- **Test results:** frontend `29 passed / 0 failed`; backend `167 passed / 0 failed / 0 skipped`; build result: `SUCCESS`.
+- **Acceptance criteria verified:**
+  - `npm audit` reports 0 vulnerabilities.
+  - Zero breaking changes introduced to frontend code or test suites.
+  - CI workflow enforces `npm audit` alongside lint, typecheck, test, and build.
+  - Remaining non-vulnerable deprecation (`whatwg-encoding`) analyzed and documented.
+- **Not verified / blocked:** None.
+- **Known limitations:** `whatwg-encoding` will continue to show an npm deprecation note until upstream `jsdom` releases a version adopting `@exodus/bytes`.
+- **Reviewer notes / follow-up:** Remediation complete and ready for commit and CI push.
+
 ## Entry template
 
 ### YYYY-MM-DD — Phase N: short name
