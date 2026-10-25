@@ -18,7 +18,7 @@ public class KafkaConfig {
     @Bean
     public NewTopic transferCommandsTopic() {
         return TopicBuilder.name(transferCommandsTopic)
-                .partitions(3)
+                .partitions(1)
                 .replicas(1)
                 .build();
     }
@@ -26,7 +26,7 @@ public class KafkaConfig {
     @Bean
     public NewTopic transferCommandsDlqTopic() {
         return TopicBuilder.name(transferCommandsDlqTopic)
-                .partitions(3)
+                .partitions(1)
                 .replicas(1)
                 .build();
     }
