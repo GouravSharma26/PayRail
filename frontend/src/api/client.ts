@@ -14,6 +14,12 @@ import {
   TransferStatusHistoryResponse,
 } from '../types/api';
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+
+function apiUrl(path: string): string {
+  return `${API_BASE_URL}${path}`;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -36,7 +42,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers.set('Accept', 'application/json');
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(apiUrl(path), {
     ...options,
     headers,
   });
@@ -84,7 +90,7 @@ export const api = {
     request<ActuatorHealthResponse>('/actuator/health', { signal }),
 
   getPrometheusMetrics: async (signal?: AbortSignal): Promise<string> => {
-    const response = await fetch('/actuator/prometheus', { signal });
+    const response = await fetch(apiUrl('/actuator/prometheus'), { signal });
     if (!response.ok) {
       throw new ApiError(response.status, 'METRICS_ERROR', `Failed to scrape metrics: status ${response.status}`);
     }
