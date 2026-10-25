@@ -541,6 +541,10 @@
   - `.\mvnw.cmd test` — PASS, 166 tests run, 0 failures, 0 errors, 0 skipped in 40.505s
   - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 41.937s, 166 tests run, 0 failures, 0 errors, 0 skipped; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
   - `docker compose --profile all config` — PASS, valid Compose file configuration
+  - `docker compose --profile app up -d --wait` — PASS, `payrail-postgres`, `payrail-broker`, and `payrail-backend` containers started and reported `healthy`
+  - `Invoke-RestMethod -Uri "http://localhost:8080/actuator/health"` — PASS, returned `{"status": "UP"}`
+  - `Invoke-RestMethod -Uri "http://localhost:8080/api/v1/ops/health/summary"` — PASS, returned `{"status": "UP", "dbStatus": "UP", "kafkaStatus": "UP", "outboxBacklog": 0, "lastReconciliationStatus": "CLEAN"}`
+  - `docker compose --profile app down -v` — PASS, clean container, network, and volume teardown
 - **Test results:** unit `54 passed / 0 failed`; integration `112 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (166 total tests passing).
 - **Acceptance criteria verified:**
   - Finding 1: Manual trigger path (`OpsService.triggerReconciliation` -> `ReconciliationCoordinator.triggerManualAudit`) with forced DB failure after run persistence rolls back both `reconciliation_runs` and `reconciliation_issues` rows.
