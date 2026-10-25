@@ -60,7 +60,7 @@ Use checkboxes only after verified implementation. Initially all implementation 
 - [x] Metrics have bounded labels and include backlog/retry/failure signals (`PayRailMetrics`, `BacklogGauges`, `/actuator/prometheus`).
 - [x] Docker Compose health checks and `backend` profile work cleanly (`docker compose --profile app up`).
 - [x] CI runs required unit and Testcontainers integration tests (`.github/workflows/ci.yml`).
-- [x] End-to-end walkthrough passes from a clean checkout (166 tests passing).
+- [x] End-to-end walkthrough passes from a clean checkout (167 tests passing).
 - [x] Documentation matches actual code and no unverified claims remain (`docs/API_CONTRACT.md`, `docs/DEPLOYMENT_AND_CI.md`).
 
 ## Phase 5 — Dashboard

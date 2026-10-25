@@ -5,8 +5,10 @@ import com.payrail.account.dto.AccountResponse;
 import com.payrail.account.dto.CreateAccountRequest;
 import com.payrail.consumer.service.AsyncProcessingFailureInjector;
 import com.payrail.consumer.service.AsyncTransferProcessor;
+import com.payrail.consumer.service.DeadLetterPublisher;
 import com.payrail.consumer.service.TransferCommandConsumer;
 import com.payrail.outbox.domain.EventEnvelope;
+import com.payrail.outbox.repository.OutboxRepository;
 import com.payrail.transfer.domain.TransferRecord;
 import com.payrail.transfer.domain.TransferStatus;
 import com.payrail.transfer.dto.CreateTransferRequest;
@@ -20,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.dao.DataAccessResourceFailureException;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.transaction.CannotCreateTransactionException;
@@ -46,6 +49,15 @@ class TransferCommandConsumerErrorPropagationIntegrationTest extends BaseIntegra
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private DeadLetterPublisher deadLetterPublisher;
+
+    @Autowired
+    private OutboxRepository outboxRepository;
+
+    @Autowired
+    private MeterRegistry meterRegistry;
 
     @Value("${payrail.topics.transfer-commands:payrail.transfer-commands.v1}")
     private String transferCommandsTopic;
@@ -75,6 +87,37 @@ class TransferCommandConsumerErrorPropagationIntegrationTest extends BaseIntegra
     @AfterEach
     void tearDown() {
         asyncTransferProcessor.setFailureInjector(null);
+        deadLetterPublisher.setFailureInjector(null);
+    }
+
+    @Test
+    @DisplayName("DLQ metric does not increment when malformed payload cannot be durably recorded")
+    void shouldNotCountMalformedPayloadAsDlqWhenPersistenceFails() throws Exception {
+        UUID eventId = UUID.randomUUID();
+        EventEnvelope envelope = new EventEnvelope(
+                eventId,
+                "transfer.requested",
+                1,
+                Instant.now(),
+                "transfer",
+                UUID.randomUUID(),
+                1L,
+                UUID.randomUUID(),
+                objectMapper.readTree("{\"transferId\":\"not-a-uuid\"}")
+        );
+        double dlqCountBefore = meterRegistry.counter("payrail.consumer.events_dlq").count();
+        deadLetterPublisher.setFailureInjector(dlq -> {
+            throw new DataAccessResourceFailureException("Simulated DLQ persistence failure");
+        });
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> asyncTransferProcessor.processTransferEvent(envelope))
+                .isInstanceOf(DataAccessResourceFailureException.class)
+                .hasMessageContaining("Simulated DLQ persistence failure");
+
+        assertThat(meterRegistry.counter("payrail.consumer.events_dlq").count()).isEqualTo(dlqCountBefore);
+        assertThat(outboxRepository.findUnpublished(Instant.now().plusSeconds(60)))
+                .noneMatch(event -> "transfer.dlq".equals(event.eventType())
+                        && eventId.equals(event.correlationId()));
     }
 
     @Test

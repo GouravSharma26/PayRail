@@ -144,9 +144,6 @@ public class AsyncTransferProcessor {
             transferId = UUID.fromString(envelope.payload().get("transferId").asText());
         } catch (Exception e) {
             log.error("Event id={} missing valid transferId in payload: {}", eventId, envelope.payload());
-            if (metrics != null) {
-                metrics.recordConsumerEventDlq();
-            }
             transactionTemplate.executeWithoutResult(status -> {
                 deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
                         transferCommandsTopic,
@@ -159,6 +156,9 @@ public class AsyncTransferProcessor {
                         envelope.payload().toString()
                 ));
                 processedMessagesRepository.insert(new ProcessedMessageRecord(CONSUMER_NAME, eventId, Instant.now(), "MALFORMED_PAYLOAD"));
+                if (metrics != null) {
+                    metrics.recordConsumerEventDlq();
+                }
             });
             return;
         }

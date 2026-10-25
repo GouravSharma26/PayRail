@@ -554,7 +554,38 @@
   - Finding 5: CI workflow updated with container smoke test verifying healthy startup under Docker Compose.
 - **Not verified / blocked:** Frontend operator dashboard (Phase 5).
 - **Known limitations:** None for Phase 4.
-- **Reviewer notes / follow-up:** Phase 4 reconciliation transaction boundary correction complete. All 166 tests pass.
+### 2026-10-25 — Phase 4: DLQ Consumer Metrics Synchronization Fix
+
+- **Commit:** not committed
+- **Scope:** Technical fix synchronizing DLQ consumer metrics increment (`metrics.recordConsumerEventDlq()`) with transactional persistence across malformed payloads, invalid envelopes, and unsupported schema versions in `TransferCommandConsumer` and `AsyncTransferProcessor`. Moving metric invocation inside `transactionTemplate.executeWithoutResult` ensures `TransactionSynchronization.afterCommit()` triggers only when dead-letter records are durably committed in PostgreSQL, preventing false DLQ metrics increments on database persistence failure.
+- **Files changed:**
+  - `backend/src/main/java/com/payrail/consumer/service/TransferCommandConsumer.java` (moved `metrics.recordConsumerEventDlq()` inside DLQ persistence transaction)
+  - `backend/src/main/java/com/payrail/consumer/service/AsyncTransferProcessor.java` (moved `metrics.recordConsumerEventDlq()` inside malformed payload DLQ transaction)
+  - `backend/src/test/java/com/payrail/KafkaListenerContainerErrorPolicyIntegrationTest.java` (verified DLQ counter does not increment on simulated DB failure during DLQ write and increments upon container recovery)
+  - `backend/src/test/java/com/payrail/TransferCommandConsumerErrorPropagationIntegrationTest.java` (added regression test `shouldNotCountMalformedPayloadAsDlqWhenPersistenceFails`)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (updated test count to 167)
+  - `docs/PHASE_LOG.md` (recorded DLQ metrics fix and verification evidence)
+- **Design decision(s):**
+  - Aligns with ADR-016: DLQ outcome metrics must be synchronized with durable database transaction commit via `TransactionSynchronization.afterCommit()`. Placing metric calls inside the transactional template ensures uncommitted or rolled-back DLQ attempts do not increment Prometheus counters.
+- **Commands run:**
+  - `git apply -C1 PayRail_Phase4_DLQ_Metrics_Fix.patch` — PASS, patch applied cleanly
+  - `.\mvnw.cmd test "-Dtest=KafkaListenerContainerErrorPolicyIntegrationTest,TransferCommandConsumerErrorPropagationIntegrationTest"` — PASS, 4 tests run, 0 failures, 0 errors, 0 skipped
+  - `.\mvnw.cmd test` — PASS, 167 tests run, 0 failures, 0 errors, 0 skipped in 38.408s
+  - `.\mvnw.cmd -B verify` — PASS, `BUILD SUCCESS` in 38.918s, 167 tests run, 0 failures, 0 errors, 0 skipped; packaged `payrail-backend-0.1.0-SNAPSHOT.jar`
+  - `docker build -f backend/Dockerfile -t payrail-backend:latest .` — PASS, image built successfully
+  - `docker compose --profile app up -d --wait` — PASS, containers `payrail-postgres`, `payrail-broker`, and `payrail-backend` reported healthy
+  - `Invoke-RestMethod -Uri "http://localhost:8080/actuator/health"` — PASS, returned `{"status": "UP"}`
+  - `Invoke-RestMethod -Uri "http://localhost:8080/api/v1/ops/health/summary"` — PASS, returned `{"status": "UP", "dbStatus": "UP", "kafkaStatus": "UP", "outboxBacklog": 0, "lastReconciliationStatus": "CLEAN"}`
+  - `docker compose --profile app down -v` — PASS, clean container and volume teardown
+- **Test results:** unit `54 passed / 0 failed`; integration `113 passed / 0 failed / 0 blocked`; build result: `BUILD SUCCESS` (167 total tests passing).
+- **Acceptance criteria verified:**
+  - Database failure during DLQ outbox record insertion does not increment `payrail.consumer.events_dlq` counter.
+  - Recovery of database and subsequent redelivery correctly increments `payrail.consumer.events_dlq` by 1 upon commit.
+  - Malformed payload DLQ failure does not increment metric counter.
+  - Full Maven verification (167 tests), Docker image build, and Docker Compose smoke test verified.
+- **Not verified / blocked:** Frontend operator dashboard (Phase 5).
+- **Known limitations:** None for Phase 4.
+- **Reviewer notes / follow-up:** Phase 4 DLQ metrics synchronization fix complete. Ready for final review.
 
 ## Entry template
 

@@ -74,7 +74,6 @@ public class TransferCommandConsumer {
 
             if (metrics != null) {
                 metrics.recordConsumerEventMalformed();
-                metrics.recordConsumerEventDlq();
             }
 
             transactionTemplate.executeWithoutResult(status -> {
@@ -88,6 +87,9 @@ public class TransferCommandConsumer {
                         Instant.now(),
                         rawMessage
                 ));
+                if (metrics != null) {
+                    metrics.recordConsumerEventDlq();
+                }
             });
             return;
         }
@@ -96,7 +98,6 @@ public class TransferCommandConsumer {
             log.warn("Invalid event envelope received with missing fields: {}", envelope);
             if (metrics != null) {
                 metrics.recordConsumerEventMalformed();
-                metrics.recordConsumerEventDlq();
             }
             transactionTemplate.executeWithoutResult(status -> {
                 deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
@@ -117,6 +118,9 @@ public class TransferCommandConsumer {
                             "INVALID_ENVELOPE"
                     ));
                 }
+                if (metrics != null) {
+                    metrics.recordConsumerEventDlq();
+                }
             });
             return;
         }
@@ -126,7 +130,6 @@ public class TransferCommandConsumer {
                     envelope.schemaVersion(), EventEnvelope.CURRENT_SCHEMA_VERSION, envelope.eventId());
             if (metrics != null) {
                 metrics.recordConsumerEventMalformed();
-                metrics.recordConsumerEventDlq();
             }
             transactionTemplate.executeWithoutResult(status -> {
                 deadLetterPublisher.recordDeadLetter(new DeadLetterEnvelope(
@@ -146,6 +149,9 @@ public class TransferCommandConsumer {
                             Instant.now(),
                             "SCHEMA_UNSUPPORTED"
                     ));
+                }
+                if (metrics != null) {
+                    metrics.recordConsumerEventDlq();
                 }
             });
             return;

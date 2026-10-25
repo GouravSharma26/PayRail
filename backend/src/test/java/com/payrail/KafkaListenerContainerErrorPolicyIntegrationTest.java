@@ -15,6 +15,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -49,6 +50,9 @@ class KafkaListenerContainerErrorPolicyIntegrationTest extends BaseIntegrationTe
     @Autowired
     private OutboxPublisherService outboxPublisherService;
 
+    @Autowired
+    private MeterRegistry meterRegistry;
+
     @Autowired(required = false)
     private KafkaListenerEndpointRegistry kafkaListenerEndpointRegistry;
 
@@ -71,6 +75,7 @@ class KafkaListenerContainerErrorPolicyIntegrationTest extends BaseIntegrationTe
     void shouldRefuseOffsetCommitOnDatabaseFailureAndRecoverWhenDatabaseRestored() throws Exception {
         String correlationId = UUID.randomUUID().toString();
         String malformedMessage = "{\"invalid_json_payload\":\"" + correlationId;
+        double dlqCountBefore = meterRegistry.counter("payrail.consumer.events_dlq").count();
 
         // 1. Inject simulated database failure during dead-letter persistence
         deadLetterPublisher.setFailureInjector(dlq -> {
@@ -92,6 +97,9 @@ class KafkaListenerContainerErrorPolicyIntegrationTest extends BaseIntegrationTe
                 .filter(e -> "transfer.dlq".equals(e.eventType()))
                 .toList();
         assertThat(duringFailureEvents).isEmpty();
+        // A failed durable DLQ write must not be counted as a completed DLQ outcome.
+        assertThat(meterRegistry.counter("payrail.consumer.events_dlq").count())
+                .isEqualTo(dlqCountBefore);
 
         // 4. Verify Kafka consumer group has NOT committed offset past the target offset
         try (AdminClient adminClient = AdminClient.create(Map.of(
@@ -122,6 +130,9 @@ class KafkaListenerContainerErrorPolicyIntegrationTest extends BaseIntegrationTe
             assertThat(dlqEvents.get(0).payloadJson()).contains("MALFORMED_EVENT");
             assertThat(dlqEvents.get(0).payloadJson()).contains(correlationId);
         });
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(meterRegistry.counter("payrail.consumer.events_dlq").count())
+                        .isEqualTo(dlqCountBefore + 1.0));
 
         // 7. Verify outbox publisher successfully publishes the DLQ record to the Kafka DLQ topic
         int published = outboxPublisherService.publishDueEvents();
