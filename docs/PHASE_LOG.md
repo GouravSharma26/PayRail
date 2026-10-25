@@ -556,7 +556,7 @@
 - **Known limitations:** None for Phase 4.
 ### 2026-10-25 — Phase 4: DLQ Consumer Metrics Synchronization Fix
 
-- **Commit:** not committed
+- **Commit:** [`d058bde`](https://github.com/GouravSharma26/PayRail/commit/d058bde43c4751357c067d70a7e5fc3b882be691)
 - **Scope:** Technical fix synchronizing DLQ consumer metrics increment (`metrics.recordConsumerEventDlq()`) with transactional persistence across malformed payloads, invalid envelopes, and unsupported schema versions in `TransferCommandConsumer` and `AsyncTransferProcessor`. Moving metric invocation inside `transactionTemplate.executeWithoutResult` ensures `TransactionSynchronization.afterCommit()` triggers only when dead-letter records are durably committed in PostgreSQL, preventing false DLQ metrics increments on database persistence failure.
 - **Files changed:**
   - `backend/src/main/java/com/payrail/consumer/service/TransferCommandConsumer.java` (moved `metrics.recordConsumerEventDlq()` inside DLQ persistence transaction)
