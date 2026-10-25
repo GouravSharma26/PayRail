@@ -649,6 +649,34 @@
 - **Not verified / blocked:** Phase 6 final review and clean-checkout verification.
 - **Known limitations:** Browser-level end-to-end integration with live Spring Boot + Vite running simultaneously requires running both processes locally.
 - **Reviewer notes / follow-up:** Phase 5 complete. Ready for commit and review.
+### 2026-10-25 — Phase 5: CI Coverage and Build Metadata Remediation
+
+- **Commit:** not committed
+- **Scope:** Add dedicated GitHub Actions frontend CI job with Node.js 22, npm ci, lint, typecheck, tests, and build. Untrack generated `frontend/tsconfig.tsbuildinfo` and add `*.tsbuildinfo` to `.gitignore`. Preserve all existing backend CI jobs (Maven verify, Docker Compose config validation, backend Docker build and smoke test).
+- **Files changed:**
+  - `.github/workflows/ci.yml` (added `frontend-ci` job with pinned Node.js 22, caching `package-lock.json`, running lint, typecheck, test, and build)
+  - `.gitignore` (added `*.tsbuildinfo` ignore rule)
+  - `frontend/tsconfig.tsbuildinfo` (removed from Git tracking)
+  - `docs/DEVELOPMENT_CHECKLIST.md` (checked frontend CI and build metadata items)
+  - `docs/PHASE_LOG.md` (recorded Phase 5 CI remediation entry)
+- **Design decision(s):**
+  - Node.js pinned to 22 LTS in `.github/workflows/ci.yml` with npm cache pointing to `frontend/package-lock.json` and default working directory `frontend`.
+  - Added `*.tsbuildinfo` to repository `.gitignore` so incremental compiler cache files from `tsc -b` are never committed to version control.
+- **Commands run:**
+  - `npm run lint` (frontend) — PASS, 0 errors, 0 warnings
+  - `npm run typecheck` (frontend) — PASS, `tsc --noEmit` exited with code 0
+  - `npm run test` (frontend) — PASS, 6 test files, 29 tests run, 29 passed, 0 failed in 3.59s
+  - `npm run build` (frontend) — PASS, `tsc -b && vite build` built production bundle in 2.28s (318.65 kB JS, 10.86 kB CSS)
+  - `.\mvnw.cmd -B verify` — PASS, 167 backend tests run, 0 failures, 0 errors, 0 skipped in 47.050s
+- **Test results:** frontend `29 passed / 0 failed`; backend `167 passed / 0 failed / 0 skipped`; build result: `SUCCESS`.
+- **Acceptance criteria verified:**
+  - Frontend CI job runs `npm ci`, `npm run lint`, `npm run typecheck`, `npm run test`, and `npm run build`.
+  - `frontend/tsconfig.tsbuildinfo` removed from Git index and covered by `.gitignore`.
+  - All existing backend Java 21, Maven verify, Docker Compose validation, and Docker smoke test jobs remain intact.
+  - Zero financial or transaction-processing code modified.
+- **Not verified / blocked:** Phase 6 final review and clean-checkout verification (strictly out of scope for Phase 5 remediation).
+- **Known limitations:** None for Phase 5 CI remediation pass.
+- **Reviewer notes / follow-up:** Ready to commit and push. Will monitor GitHub Actions run upon push.
 
 ## Entry template
 

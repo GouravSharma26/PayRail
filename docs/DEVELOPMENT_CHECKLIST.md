@@ -72,6 +72,8 @@ Use checkboxes only after verified implementation. Initially all implementation 
 - [x] Reconciliation/ops views are read-only or properly protected.
 - [x] Frontend does not calculate authoritative financial balances.
 - [x] Lint/typecheck/tests/build pass (ESLint 9, TypeScript ~5.7.2, 29 Vitest tests passing, Vite production build).
+- [x] Dedicated frontend CI job added to GitHub Actions workflow with pinned Node.js 22, npm ci, lint, typecheck, tests, and build.
+- [x] Generated build metadata (tsconfig.tsbuildinfo) removed from tracking and added to .gitignore.
 
 ## Phase 6 — Final review
 
