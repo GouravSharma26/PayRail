@@ -651,7 +651,7 @@
 - **Reviewer notes / follow-up:** Phase 5 complete. Ready for commit and review.
 ### 2026-10-25 — Phase 5: CI Coverage and Build Metadata Remediation
 
-- **Commit:** not committed
+- **Commit:** [`890dc96`](https://github.com/GouravSharma26/PayRail/commit/890dc96)
 - **Scope:** Add dedicated GitHub Actions frontend CI job with Node.js 22, npm ci, lint, typecheck, tests, and build. Untrack generated `frontend/tsconfig.tsbuildinfo` and add `*.tsbuildinfo` to `.gitignore`. Preserve all existing backend CI jobs (Maven verify, Docker Compose config validation, backend Docker build and smoke test).
 - **Files changed:**
   - `.github/workflows/ci.yml` (added `frontend-ci` job with pinned Node.js 22, caching `package-lock.json`, running lint, typecheck, test, and build)
