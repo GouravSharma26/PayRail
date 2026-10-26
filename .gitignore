@@ -75,3 +75,8 @@ frontend/dist/
 frontend/.next/
 *.tsbuildinfo
 .playwright-mcp/
+
+# Documentation and Agent configuration
+docs/
+doc/
+.agents/
